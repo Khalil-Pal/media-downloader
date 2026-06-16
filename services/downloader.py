@@ -29,11 +29,11 @@ _download_semaphore = asyncio.Semaphore(settings.max_concurrent_downloads)
 _cancel_flags: dict[int, asyncio.Event] = {}
 
 QUALITY_FORMATS: dict[str, str] = {
-    "best": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-    "720": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]",
-    "480": "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]",
-    "360": "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4]/best[height<=360]",
-    "144": "bestvideo[height<=144][ext=mp4]+bestaudio[ext=m4a]/best[height<=144][ext=mp4]/best[height<=144]",
+    "best": "best[ext=mp4]/best",
+    "720": "best[height<=720][ext=mp4]/best[height<=720]",
+    "480": "best[height<=480][ext=mp4]/best[height<=480]",
+    "360": "best[height<=360][ext=mp4]/best[height<=360]",
+    "144": "best[height<=144][ext=mp4]/best[height<=144]",
 }
 
 AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio"
