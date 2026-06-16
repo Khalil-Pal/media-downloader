@@ -48,6 +48,4 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     DOWNLOAD_PATH=/app/temp_downloads
 
-VOLUME ["/app/temp_downloads", "/app/logs"]
-
 CMD ["python", "main.py"]
