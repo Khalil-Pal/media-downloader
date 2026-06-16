@@ -17,7 +17,6 @@ from utils import (
     truncate,
     rate_limiter,
 )
-from utils.schedule import is_open, get_status_message
 from handlers.common import quality_keyboard
 
 logger = logging.getLogger(__name__)
@@ -37,10 +36,6 @@ async def _run_download(
 ) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
 
-    # Working hours check
-    if not is_open():
-        await message.answer(get_status_message())
-        return
 
     # Rate limit check
     allowed, reason = await rate_limiter.check(user_id)
