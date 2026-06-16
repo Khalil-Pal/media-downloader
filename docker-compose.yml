@@ -1,0 +1,28 @@
+version: "3.9"
+
+services:
+  sandy_squirrel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sandy_squirrel_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Persist downloads and logs outside the container
+      - ./temp_downloads:/app/temp_downloads
+      - ./logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1
+    # Resource limits (tune for your VPS)
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
