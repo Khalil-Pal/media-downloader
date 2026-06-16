@@ -109,46 +109,51 @@ async def _run_download(
         # ── Upload to Telegram ─────────────────────────────────────────────
         await status_msg.edit_text("📤 Uploading to Telegram…")
         caption = (
-            f"🐿️ *{truncate(result.info.title, 60)}*\n"  # type: ignore[union-attr]
-            f"👤 {result.info.uploader}  |  ⏱ {result.info.duration}  |  📦 {result.info.file_size_str}"  # type: ignore[union-attr]
+            f"🐿️ *{truncate(result.info.title, 60)}*\n"
+            f"👤 {result.info.uploader}  |  ⏱ {result.info.duration}  |  📦 {result.info.file_size_str}"
         )
 
-        file_input = FSInputFile(result.file_path)
+        actual_size = result.file_path.stat().st_size
+        size_limit = 50 * 1024 * 1024  # 50MB — aiogram limit
 
         try:
-            if audio_only or result.file_path.suffix.lower() == ".mp3":
-                await bot.send_audio(
+            if actual_size > size_limit:
+                # Large file — use Telethon
+                from services.telethon_uploader import upload_large_file
+                await upload_large_file(
                     chat_id=message.chat.id,
-                    audio=file_input,
+                    file_path=result.file_path,
                     caption=caption,
-                    parse_mode="Markdown",
-                    title=result.info.title,  # type: ignore[union-attr]
-                    performer=result.info.uploader,  # type: ignore[union-attr]
+                    is_audio=audio_only,
                 )
             else:
-                await bot.send_video(
-                    chat_id=message.chat.id,
-                    video=file_input,
-                    caption=caption,
-                    parse_mode="Markdown",
-                    supports_streaming=True,
-                )
+                # Small file — use aiogram as before
+                file_input = FSInputFile(result.file_path)
+                if audio_only or result.file_path.suffix.lower() == ".mp3":
+                    await bot.send_audio(
+                        chat_id=message.chat.id,
+                        audio=file_input,
+                        caption=caption,
+                        parse_mode="Markdown",
+                        title=result.info.title,
+                        performer=result.info.uploader,
+                    )
+                else:
+                    await bot.send_video(
+                        chat_id=message.chat.id,
+                        video=file_input,
+                        caption=caption,
+                        parse_mode="Markdown",
+                        supports_streaming=True,
+                    )
 
             await status_msg.delete()
             await stats.record_success(user_id)
 
         except Exception as exc:
             logger.error("Upload error: %s", exc)
-            await status_msg.edit_text(
-                f"❌ Upload failed: {exc}\n\n"
-                "The file may be too large for Telegram (50 MB limit)."
-            )
+            await status_msg.edit_text(f"❌ Upload failed: {exc}")
             await stats.record_failure(user_id)
-
-    finally:
-        _active_downloads.discard(user_id)
-        if result is not None and result.file_path:  # type: ignore[possibly-undefined]
-            cleanup_session(result.file_path)
 
 
 # ── /download command ──────────────────────────────────────────────────────────

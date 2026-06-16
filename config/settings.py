@@ -31,6 +31,9 @@ class Settings:
     # ── Telegram ──────────────────────────────────────────────────────────
     bot_token: str = field(default_factory=lambda: _require("BOT_TOKEN"))
     admin_id: int = field(default_factory=lambda: _int("ADMIN_ID", 0))
+    api_id: int = field(default_factory=lambda: _int("API_ID", 0))
+    api_hash: str = field(default_factory=lambda: os.getenv("API_HASH", ""))
+    phone: str = field(default_factory=lambda: os.getenv("PHONE", ""))
 
     # ── File limits ───────────────────────────────────────────────────────
     max_file_size_mb: int = field(default_factory=lambda: _int("MAX_FILE_SIZE_MB", 50))
