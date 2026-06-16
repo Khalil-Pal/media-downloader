@@ -1,41 +1,33 @@
 """
 handlers/downloader_handler.py – /download, /audio commands + plain URL messages.
-
-Business rule: NO download logic lives here.
-All media work is delegated to services/downloader.py.
 """
 from __future__ import annotations
 
 import logging
 
-import aiofiles
 from aiogram import Bot, Router, F
 from aiogram.filters import Command
-from aiogram.types import (
-    BufferedInputFile,
-    FSInputFile,
-    Message,
-)
+from aiogram.types import FSInputFile, Message
 
 from services import download_media, fetch_info, cleanup_session, stats
+from services.telethon_uploader import upload_large_file
 from utils import (
     is_valid_url,
     detect_platform,
     extract_url_from_text,
-    format_duration,
     truncate,
     rate_limiter,
 )
-from handlers.common import quality_keyboard, cancel_keyboard
+from utils.schedule import is_open, get_status_message
+from handlers.common import quality_keyboard
 
 logger = logging.getLogger(__name__)
 router = Router(name="downloader")
 
-# Track users currently in a download so we don't start a second one
 _active_downloads: set[int] = set()
 
+SMALL_FILE_LIMIT = 50 * 1024 * 1024  # 50MB
 
-# ── Shared download orchestration ─────────────────────────────────────────────
 
 async def _run_download(
     message: Message,
@@ -47,13 +39,18 @@ async def _run_download(
     """Core download flow shared by all entry points."""
     user_id = message.from_user.id  # type: ignore[union-attr]
 
-    # Rate limit check
+    # ── Working hours check ───────────────────────────────────────
+    if not is_open():
+        await message.answer(get_status_message())
+        return
+
+    # ── Rate limit check ──────────────────────────────────────────
     allowed, reason = await rate_limiter.check(user_id)
     if not allowed:
         await message.answer(reason)
         return
 
-    # Guard: one download at a time per user
+    # ── One download at a time per user ───────────────────────────
     if user_id in _active_downloads:
         await message.answer(
             "⚠️ You already have an active download. "
@@ -63,9 +60,10 @@ async def _run_download(
 
     _active_downloads.add(user_id)
     status_msg = await message.answer("🔍 Fetching media info…")
+    result = None
 
     try:
-        # ── Fetch metadata first ───────────────────────────────────────────
+        # ── Fetch metadata ────────────────────────────────────────
         try:
             info = await fetch_info(url)
         except ValueError as exc:
@@ -82,17 +80,16 @@ async def _run_download(
             f"🌐 {platform}\n\n"
             f"⬇️ Starting download… _{mode}_"
         )
-
         await status_msg.edit_text(preview, parse_mode="Markdown")
 
-        # ── Progress callback ──────────────────────────────────────────────
+        # ── Progress callback ─────────────────────────────────────
         async def on_progress(msg_text: str) -> None:
             try:
                 await status_msg.edit_text(msg_text)
             except Exception:
-                pass  # Ignore edit rate-limit errors
+                pass
 
-        # ── Download ──────────────────────────────────────────────────────
+        # ── Download ──────────────────────────────────────────────
         result = await download_media(
             url=url,
             user_id=user_id,
@@ -106,20 +103,20 @@ async def _run_download(
             await stats.record_failure(user_id)
             return
 
-        # ── Upload to Telegram ─────────────────────────────────────────────
+        # ── Upload to Telegram ────────────────────────────────────
         await status_msg.edit_text("📤 Uploading to Telegram…")
         caption = (
-            f"🐿️ *{truncate(result.info.title, 60)}*\n"
-            f"👤 {result.info.uploader}  |  ⏱ {result.info.duration}  |  📦 {result.info.file_size_str}"
+            f"🐿️ *{truncate(result.info.title, 60)}*\n"  # type: ignore[union-attr]
+            f"👤 {result.info.uploader}  |  "  # type: ignore[union-attr]
+            f"⏱ {result.info.duration}  |  "  # type: ignore[union-attr]
+            f"📦 {result.info.file_size_str}"  # type: ignore[union-attr]
         )
 
         actual_size = result.file_path.stat().st_size
-        size_limit = 50 * 1024 * 1024  # 50MB — aiogram limit
 
         try:
-            if actual_size > size_limit:
+            if actual_size > SMALL_FILE_LIMIT:
                 # Large file — use Telethon
-                from services.telethon_uploader import upload_large_file
                 await upload_large_file(
                     chat_id=message.chat.id,
                     file_path=result.file_path,
@@ -127,7 +124,7 @@ async def _run_download(
                     is_audio=audio_only,
                 )
             else:
-                # Small file — use aiogram as before
+                # Small file — use aiogram
                 file_input = FSInputFile(result.file_path)
                 if audio_only or result.file_path.suffix.lower() == ".mp3":
                     await bot.send_audio(
@@ -152,75 +149,8 @@ async def _run_download(
 
         except Exception as exc:
             logger.error("Upload error: %s", exc)
-            await status_msg.edit_text(f"❌ Upload failed: {exc}")
+            await status_msg.edit_text(
+                f"❌ Upload failed: {exc}\n\n"
+                "The file may be too large or Telegram timed out."
+            )
             await stats.record_failure(user_id)
-
-
-# ── /download command ──────────────────────────────────────────────────────────
-
-@router.message(Command("download"))
-async def cmd_download(message: Message, bot: Bot) -> None:
-    text = message.text or ""
-    parts = text.split(maxsplit=1)
-
-    if len(parts) < 2 or not parts[1].strip():
-        await message.answer(
-            "📎 Usage: `/download <URL>`\n\n"
-            "Example:\n`/download https://youtu.be/dQw4w9WgXcQ`",
-            parse_mode="Markdown",
-        )
-        return
-
-    url = extract_url_from_text(parts[1])
-    if not url:
-        await message.answer("❌ Invalid URL. Please provide a valid video link.")
-        return
-
-    # Show quality picker
-    await message.answer(
-        f"🎚 Choose your preferred quality for:\n`{truncate(url, 60)}`",
-        parse_mode="Markdown",
-        reply_markup=quality_keyboard(url),
-    )
-
-
-# ── /audio command ─────────────────────────────────────────────────────────────
-
-@router.message(Command("audio"))
-async def cmd_audio(message: Message, bot: Bot) -> None:
-    text = message.text or ""
-    parts = text.split(maxsplit=1)
-
-    if len(parts) < 2 or not parts[1].strip():
-        await message.answer(
-            "🎵 Usage: `/audio <URL>`\n\n"
-            "Example:\n`/audio https://youtu.be/dQw4w9WgXcQ`",
-            parse_mode="Markdown",
-        )
-        return
-
-    url = extract_url_from_text(parts[1])
-    if not url:
-        await message.answer("❌ Invalid URL. Please provide a valid video link.")
-        return
-
-    await _run_download(message, bot, url, audio_only=True)
-
-
-# ── Plain URL messages ─────────────────────────────────────────────────────────
-
-@router.message(F.text & F.text.regexp(r"https?://\S+"))
-async def handle_url_message(message: Message, bot: Bot) -> None:
-    """Auto-detect URLs dropped directly into the chat."""
-    text = message.text or ""
-    url = extract_url_from_text(text)
-
-    if not url or not is_valid_url(url):
-        return  # Ignore; let other handlers deal with it
-
-    await message.answer(
-        f"🔗 *Link detected!*\n\n`{truncate(url, 70)}`\n\n"
-        "Choose what you'd like to do:",
-        parse_mode="Markdown",
-        reply_markup=quality_keyboard(url),
-    )
