@@ -137,6 +137,7 @@ def _extract_info_sync(url: str) -> dict:
         "no_warnings": True,
         "extract_flat": False,
         "skip_download": True,
+        "cookiefile": "cookies.txt",
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)  # type: ignore[return-value]
@@ -175,6 +176,7 @@ def _download_sync(
         # File size guard (yt-dlp native, in bytes)
         "max_filesize": settings.max_file_size_bytes,
         "ffmpeg_location" : r"C:\Users\User\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.1-full_build\bin\ffmpeg.exe",
+        "cookiefile": "cookies.txt",
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
