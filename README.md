@@ -83,22 +83,6 @@ python main.py
 
 ---
 
-## Environment Variables
-
-| Variable | Required | Default | Description |
-|---|--|-|---|
-| `BOT_TOKEN` | ❌ | 8997950944:AAH5sehwDKpTj0qXMz1pKgVmEy7jaHhz-08| Telegram bot token from @BotFather |
-| `ADMIN_ID` | ❌ | `0` | Telegram user ID for /stats access |
-| `MAX_FILE_SIZE_MB` | ❌ | `50` | Max download size (Telegram limit) |
-| `DOWNLOAD_PATH` | ❌ | `./temp_downloads` | Temp file directory |
-| `LOG_LEVEL` | ❌ | `INFO` | DEBUG / INFO / WARNING / ERROR |
-| `RATE_LIMIT_MAX` | ❌ | `3` | Max downloads per user per window |
-| `RATE_LIMIT_WINDOW` | ❌ | `60` | Rate limit window in seconds |
-| `COOLDOWN_SECONDS` | ❌ | `5` | Min gap between user requests |
-| `MAX_CONCURRENT_DOWNLOADS` | ❌ | `5` | Global concurrency cap |
-| `DEFAULT_QUALITY` | ❌ | `best` | Default quality (best/720/480/360/144) |
-
----
 
 ## Linux VPS Deployment
 
@@ -202,17 +186,6 @@ You can also just **paste a URL directly** into the chat — Sandy will detect i
 
 ---
 
-## Security Notes
-
-- Bot validates all URLs before processing
-- Private/local IP addresses are blocked
-- Files exceeding `MAX_FILE_SIZE_MB` are rejected
-- Per-user rate limiting prevents abuse
-- Bot runs as a non-root user in Docker
-- No credentials or secrets are hardcoded
-
----
-
 ## Supported Platforms
 
 Sandy Squirrel uses yt-dlp which supports 1000+ sites. Officially advertised:
@@ -225,9 +198,3 @@ Sandy Squirrel uses yt-dlp which supports 1000+ sites. Officially advertised:
 - 🎬 Vimeo
 - 🔗 Reddit
 - 📺 Dailymotion
-
----
-
-## License
-
-MIT – Use freely, deploy responsibly.
