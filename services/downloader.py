@@ -22,6 +22,30 @@ from utils.formatters import format_duration, format_size, progress_bar
 
 logger = logging.getLogger(__name__)
 
+import os
+import tempfile
+
+
+def _get_cookies_file() -> str | None:
+    """Write YOUTUBE_COOKIES env var to a temp file and return its path."""
+    cookies_content = os.getenv("YOUTUBE_COOKIES")
+    if not cookies_content:
+        # Fall back to local file if it exists
+        if os.path.exists("cookies.txt"):
+            return "cookies.txt"
+        return None
+
+    # Write to a temporary file
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".txt",
+        delete=False,
+        encoding="utf-8"
+    )
+    tmp.write(cookies_content)
+    tmp.close()
+    return tmp.name
+
 # Semaphore caps global concurrent downloads
 _download_semaphore = asyncio.Semaphore(settings.max_concurrent_downloads)
 
@@ -132,16 +156,18 @@ async def _safe_callback(callback: ProgressCallback, msg: str) -> None:
 
 def _extract_info_sync(url: str) -> dict:
     """Blocking yt-dlp info extraction (run in executor)."""
+    cookies_file = _get_cookies_file()
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
         "extract_flat": False,
         "skip_download": True,
-        "cookiefile": "cookies.txt",
     }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        return ydl.extract_info(url, download=False)  # type: ignore[return-value]
+    if cookies_file:
+        ydl_opts["cookiefile"] = cookies_file
 
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        return ydl.extract_info(url, download=False)
 
 def _download_sync(
     url: str,
@@ -151,6 +177,7 @@ def _download_sync(
     progress_hook: Callable[[dict], None],
 ) -> tuple[Path, dict]:
     """Blocking download (run in executor). Returns (file_path, info_dict)."""
+    cookies_file = _get_cookies_file()
     outtmpl = str(output_path / "%(title).80s.%(ext)s")
 
     postprocessors = []
@@ -170,14 +197,12 @@ def _download_sync(
         "no_warnings": True,
         "progress_hooks": [progress_hook],
         "postprocessors": postprocessors,
-        # Security: never follow redirects to local file://
         "nocheckcertificate": False,
         "geo_bypass": True,
-        # File size guard (yt-dlp native, in bytes)
         "max_filesize": settings.max_file_size_bytes,
-        "ffmpeg_location" : r"C:\Users\User\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.1-full_build\bin\ffmpeg.exe",
-        "cookiefile": "cookies.txt",
     }
+    if cookies_file:
+        ydl_opts["cookiefile"] = cookies_file
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -192,7 +217,7 @@ def _download_sync(
     if not found:
         raise FileNotFoundError("Download completed but output file not found.")
 
-    return found, info  # type: ignore[return-value]
+    return found, info
 
 
 async def fetch_info(url: str) -> MediaInfo:
