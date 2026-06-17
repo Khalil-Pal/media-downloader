@@ -160,12 +160,6 @@ Planned features:
 
 ---
 
-## 🤝 Contributing
-
-Pull requests are welcome.
-
----
-
 ## 📜 License
 
 MIT License
