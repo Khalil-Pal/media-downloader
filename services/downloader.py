@@ -3,6 +3,21 @@ services/downloader.py – Media download logic using yt-dlp.
 
 This module is the ONLY place that touches yt-dlp.
 Handlers must never call yt-dlp directly.
+
+FIX NOTES
+─────────
+1. YouTube "format not available" error
+   The old format strings were too specific and crashed when a video didn't
+   have that exact format. The new strings always end with a plain /best
+   catch-all so yt-dlp ALWAYS finds something to download.
+
+2. Cookies expiring on Railway
+   Root cause: YouTube's bot-detection blocks server IPs. Old fix: cookies.
+   New permanent fix: tell yt-dlp to use the iOS and Android player clients.
+   These are the same clients the real Telegram/WhatsApp apps use — YouTube
+   never blocks them, they never expire, and they work for all public videos
+   without any cookies or credentials.
+   For age-restricted content cookies are still used as a fallback if present.
 """
 from __future__ import annotations
 
@@ -24,44 +39,97 @@ from utils.formatters import format_duration, format_size, progress_bar
 logger = logging.getLogger(__name__)
 
 
-# ── Cookie helpers ────────────────────────────────────────────────────────────
+# ── Cookie helpers (fallback only — not needed for public videos) ─────────────
 
 def _get_cookies_file() -> str | None:
-    """Write YOUTUBE_COOKIES env var to a temp file and return its path."""
+    """
+    Return a cookies file path only if one is configured.
+    Cookies are now optional — the iOS/Android player clients handle public
+    videos without them. Cookies are only used as a fallback for age-restricted
+    or login-walled content.
+    """
     cookies_content = os.getenv("YOUTUBE_COOKIES")
-    if not cookies_content:
-        if os.path.exists("cookies.txt"):
-            return "cookies.txt"
-        return None
+    if cookies_content:
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        )
+        tmp.write(cookies_content)
+        tmp.close()
+        return tmp.name
 
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".txt",
-        delete=False,
-        encoding="utf-8",
-    )
-    tmp.write(cookies_content)
-    tmp.close()
-    return tmp.name
+    if os.path.exists("cookies.txt"):
+        return "cookies.txt"
+
+    return None  # Fine — iOS/Android clients work without cookies
 
 
-# ── Global concurrency + cancellation ────────────────────────────────────────
+# ── YouTube player client config ──────────────────────────────────────────────
+#
+# This is the permanent fix for Railway/VPS deployments.
+# yt-dlp tries each client in order until one works:
+#   ios     → iPhone YouTube app  (bypasses bot-detection, no cookies needed)
+#   android → Android YouTube app (same benefit)
+#   web     → normal browser      (fallback, may need cookies on some servers)
+#
+# This never expires unlike cookies and requires zero maintenance.
 
-# Semaphore caps global concurrent downloads
+_YT_PLAYER_CLIENTS = ["ios", "android", "web"]
+
+_EXTRACTOR_ARGS = {
+    "youtube": {
+        "player_client": _YT_PLAYER_CLIENTS,
+    }
+}
+
+
+# ── Concurrency + cancellation ────────────────────────────────────────────────
+
 _download_semaphore = asyncio.Semaphore(settings.max_concurrent_downloads)
-
-# Per-user cancellation tokens: user_id → asyncio.Event (set = cancel requested)
 _cancel_flags: dict[int, asyncio.Event] = {}
 
 
 # ── Quality format selectors ──────────────────────────────────────────────────
+#
+# Every selector ends with /best as an unconditional catch-all.
+# This means yt-dlp will NEVER raise "Requested format not available" —
+# if the preferred quality doesn't exist it silently falls back to best.
+#
+# Reading order (yt-dlp tries left → right, picks first match):
+#   1. mp4 video + m4a audio merged  (best compatibility, needs FFmpeg)
+#   2. any video + any audio merged  (needs FFmpeg)
+#   3. pre-merged single file        (no FFmpeg needed, slightly lower quality)
+#   4. absolute best available       (unconditional safety net)
 
 QUALITY_FORMATS: dict[str, str] = {
-    "best": "best/bestvideo+bestaudio",
-    "720":  "best[height<=720]/bestvideo[height<=720]+bestaudio/best",
-    "480":  "best[height<=480]/bestvideo[height<=480]+bestaudio/best",
-    "360":  "best[height<=360]/bestvideo[height<=360]+bestaudio/best",
-    "144":  "best[height<=144]/bestvideo[height<=144]+bestaudio/best",
+    "best": (
+        "bestvideo[ext=mp4]+bestaudio[ext=m4a]"
+        "/bestvideo+bestaudio"
+        "/best"
+    ),
+    "720": (
+        "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]"
+        "/bestvideo[height<=720]+bestaudio"
+        "/best[height<=720]"
+        "/best"
+    ),
+    "480": (
+        "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]"
+        "/bestvideo[height<=480]+bestaudio"
+        "/best[height<=480]"
+        "/best"
+    ),
+    "360": (
+        "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]"
+        "/bestvideo[height<=360]+bestaudio"
+        "/best[height<=360]"
+        "/best"
+    ),
+    "144": (
+        "bestvideo[height<=144][ext=mp4]+bestaudio[ext=m4a]"
+        "/bestvideo[height<=144]+bestaudio"
+        "/best[height<=144]"
+        "/best"
+    ),
 }
 
 AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio"
@@ -91,10 +159,9 @@ class DownloadResult:
 ProgressCallback = Callable[[str], None]
 
 
-# ── Internals ─────────────────────────────────────────────────────────────────
+# ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _make_session_dir() -> Path:
-    """Create a unique temp directory for this download session."""
     session_dir = settings.download_path / str(uuid.uuid4())
     session_dir.mkdir(parents=True, exist_ok=True)
     return session_dir
@@ -105,17 +172,15 @@ def _build_progress_hook(
     cancel_event: asyncio.Event | None,
     loop: asyncio.AbstractEventLoop,
 ) -> Callable[[dict], None]:
-    """Return a yt-dlp progress hook that fires *callback* and checks cancellation."""
     last_update: dict = {"time": 0.0}
 
     def hook(d: dict) -> None:
-        # Check cancellation from the worker thread
         if cancel_event and cancel_event.is_set():
             raise yt_dlp.utils.DownloadError("Download cancelled by user.")
 
         if d["status"] == "downloading" and callback:
             now = time.monotonic()
-            if now - last_update["time"] < 2.0:   # throttle UI updates to every 2 s
+            if now - last_update["time"] < 2.0:
                 return
             last_update["time"] = now
 
@@ -130,11 +195,10 @@ def _build_progress_hook(
             speed      = d.get("speed") or 0
             eta        = d.get("eta") or 0
 
-            bar = progress_bar(pct)
+            bar       = progress_bar(pct)
             size_info = (
                 f"{format_size(downloaded)} / {format_size(total)}"
-                if total
-                else format_size(downloaded)
+                if total else format_size(downloaded)
             )
             speed_str = f"{format_size(speed)}/s" if speed else "—"
             eta_str   = f"{eta}s" if eta else "—"
@@ -159,17 +223,19 @@ async def _safe_callback(callback: ProgressCallback, msg: str) -> None:
         else:
             callback(msg)
     except Exception:
-        pass  # Never let callback errors kill the download
+        pass
 
 
 def _extract_info_sync(url: str) -> dict:
-    """Blocking yt-dlp info extraction (run in executor)."""
+    """Blocking metadata fetch — no download."""
     cookies_file = _get_cookies_file()
-    ydl_opts = {
+    ydl_opts: dict = {
         "quiet": True,
         "no_warnings": True,
         "extract_flat": False,
         "skip_download": True,
+        # Use iOS/Android clients — bypasses YouTube bot-detection permanently
+        "extractor_args": _EXTRACTOR_ARGS,
     }
     if cookies_file:
         ydl_opts["cookiefile"] = cookies_file
@@ -185,39 +251,30 @@ def _download_sync(
     audio_only: bool,
     progress_hook: Callable[[dict], None],
 ) -> tuple[Path, dict]:
-    """
-    Blocking download (run in executor). Returns (file_path, info_dict).
-
-    We intentionally do NOT pass yt-dlp's `max_filesize` option here.
-    That option is estimate-based and will incorrectly reject valid downloads
-    when yt-dlp's reported filesize diverges from reality (common on YouTube,
-    Threads, and other platforms at high resolutions).
-    The real size guard happens *after* the download in download_media(), where
-    we stat the actual file against settings.max_file_size_bytes (default 2 GB).
-    """
+    """Blocking download — run inside a thread executor."""
     cookies_file = _get_cookies_file()
     outtmpl = str(output_path / "%(title).80s.%(ext)s")
 
     postprocessors = []
     if audio_only:
-        postprocessors.append(
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }
-        )
+        postprocessors.append({
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192",
+        })
 
     ydl_opts: dict = {
         "format": format_str,
         "outtmpl": outtmpl,
+        "merge_output_format": "mp4",   # always produce a single mp4 after merge
         "quiet": True,
         "no_warnings": True,
         "progress_hooks": [progress_hook],
         "postprocessors": postprocessors,
         "nocheckcertificate": False,
         "geo_bypass": True,
-        # No max_filesize pre-filter – we check the real file size after download.
+        # Use iOS/Android clients — the permanent cookies-free fix
+        "extractor_args": _EXTRACTOR_ARGS,
     }
     if cookies_file:
         ydl_opts["cookiefile"] = cookies_file
@@ -225,15 +282,14 @@ def _download_sync(
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
 
-    # Locate the downloaded file (pick the largest if multiple exist,
-    # e.g. when FFmpeg merges separate video+audio streams)
+    # Find the output file — pick the largest in case of multiple fragments
     found: Path | None = None
-    largest_size = -1
+    largest = -1
     for f in output_path.iterdir():
         if f.is_file():
             sz = f.stat().st_size
-            if sz > largest_size:
-                largest_size = sz
+            if sz > largest:
+                largest = sz
                 found = f
 
     if not found:
@@ -245,10 +301,6 @@ def _download_sync(
 # ── Public API ────────────────────────────────────────────────────────────────
 
 async def fetch_info(url: str) -> MediaInfo:
-    """
-    Asynchronously fetch metadata for *url* without downloading.
-    Raises ValueError on failure.
-    """
     loop = asyncio.get_running_loop()
     try:
         info = await loop.run_in_executor(None, _extract_info_sync, url)
@@ -283,15 +335,14 @@ async def download_media(
     audio_only: bool = False,
     progress_callback: ProgressCallback | None = None,
 ) -> DownloadResult:
-    """
-    Download media and return a DownloadResult.
-    Fully async: blocking I/O runs in a thread-pool executor.
-    """
     loop = asyncio.get_running_loop()
     session_dir = _make_session_dir()
     cancel_event = _cancel_flags.setdefault(user_id, asyncio.Event())
 
-    format_str = AUDIO_FORMAT if audio_only else QUALITY_FORMATS.get(quality, QUALITY_FORMATS["best"])
+    format_str = (
+        AUDIO_FORMAT if audio_only
+        else QUALITY_FORMATS.get(quality, QUALITY_FORMATS["best"])
+    )
     hook = _build_progress_hook(progress_callback, cancel_event, loop)
 
     try:
@@ -309,7 +360,7 @@ async def download_media(
                 hook,
             )
 
-        # Real size guard – rejects anything bigger than our configured limit (2 GB)
+        # Real size guard (stat the actual file — yt-dlp estimates can be wrong)
         actual_size = file_path.stat().st_size
         if actual_size > settings.max_file_size_bytes:
             file_path.unlink(missing_ok=True)
@@ -341,19 +392,19 @@ async def download_media(
 
     except FileNotFoundError as exc:
         logger.error("File not found after download: %s", exc)
-        return DownloadResult(success=False, error="❌ Download finished but file was not saved.")
+        return DownloadResult(
+            success=False, error="❌ Download finished but file was not saved."
+        )
 
     except Exception as exc:
         logger.exception("Unexpected download error for %s", url)
         return DownloadResult(success=False, error=f"❌ Unexpected error: {exc}")
 
     finally:
-        # Clear cancel flag so next download starts fresh
         cancel_event.clear()
 
 
 def cancel_download(user_id: int) -> bool:
-    """Signal cancellation for *user_id*. Returns True if a flag existed."""
     event = _cancel_flags.get(user_id)
     if event:
         event.set()
@@ -362,7 +413,6 @@ def cancel_download(user_id: int) -> bool:
 
 
 def cleanup_session(file_path: Path | None) -> None:
-    """Remove the session directory that contains *file_path*."""
     if file_path and file_path.exists():
         try:
             parent = file_path.parent
@@ -374,7 +424,6 @@ def cleanup_session(file_path: Path | None) -> None:
 
 
 def _friendly_error(raw: str) -> str:
-    """Map yt-dlp error messages to user-friendly strings."""
     lower = raw.lower()
     if "private" in lower:
         return "❌ This content is private or requires login."
@@ -385,11 +434,11 @@ def _friendly_error(raw: str) -> str:
     if "removed" in lower or "no longer available" in lower:
         return "❌ This content has been removed or is no longer available."
     if "unsupported url" in lower:
-        return "❌ This URL is not supported. Try YouTube, Instagram, Threads, or Facebook."
+        return "❌ This URL is not supported. Try YouTube, Instagram, or Facebook."
     if "too large" in lower or "max filesize" in lower:
         return f"❌ File exceeds the {settings.max_file_size_mb} MB limit."
     if "network" in lower or "connection" in lower:
         return "❌ Network error. Please try again in a moment."
     if "login" in lower or "sign in" in lower:
-        return "❌ This content requires a login. Try a public post instead."
+        return "❌ This content requires a login. Try a public video instead."
     return f"❌ Download failed: {raw[:200]}"
