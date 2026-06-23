@@ -9,6 +9,7 @@ from aiogram import Bot, Router, F
 from aiogram.types import CallbackQuery
 
 from utils import extract_url_from_text, is_valid_url
+from handlers.common import resolve_url
 
 logger = logging.getLogger(__name__)
 router = Router(name="callbacks")
@@ -17,8 +18,12 @@ router = Router(name="callbacks")
 @router.callback_query(F.data.startswith("quality:"))
 async def cb_quality(callback: CallbackQuery, bot: Bot) -> None:
     """
-    Callback data format: quality:<quality>:<url>
+    Callback data format: quality:<quality>:<token>
     quality is one of: best, 720, 480, 360, 144, audio
+
+    The third field is a 12-char hex token produced by handlers.common._store_url().
+    We look it up via resolve_url() to recover the original (possibly long) URL
+    without being constrained by Telegram's 64-byte callback_data limit.
     """
     await callback.answer()
 
@@ -27,11 +32,19 @@ async def cb_quality(callback: CallbackQuery, bot: Bot) -> None:
         await callback.message.answer("❌ Invalid selection.")  # type: ignore[union-attr]
         return
 
-    _, quality, raw_url = parts
-    url = extract_url_from_text(raw_url) or raw_url.strip()
+    _, quality, token = parts
+
+    # Try token lookup first; fall back to treating the field as a raw URL
+    # (backward-compat for any outstanding keyboards generated before this change)
+    url = resolve_url(token)
+    if not url:
+        url = extract_url_from_text(token) or token.strip()
 
     if not is_valid_url(url):
-        await callback.message.answer("❌ The URL in this request is no longer valid.")  # type: ignore[union-attr]
+        await callback.message.answer(  # type: ignore[union-attr]
+            "❌ The URL for this request has expired or is invalid. "
+            "Please send the link again."
+        )
         return
 
     audio_only = quality == "audio"

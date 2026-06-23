@@ -36,7 +36,10 @@ class Settings:
     phone: str = field(default_factory=lambda: os.getenv("PHONE", ""))
 
     # ── File limits ───────────────────────────────────────────────────────
-    max_file_size_mb: int = field(default_factory=lambda: _int("MAX_FILE_SIZE_MB", 50))
+    # Default is 2 GB.  Files ≤ 50 MB go via the Bot API;
+    # files 50 MB – 2 GB are sent through Telethon (MTProto).
+    # Override with MAX_FILE_SIZE_MB in your .env if you need a lower cap.
+    max_file_size_mb: int = field(default_factory=lambda: _int("MAX_FILE_SIZE_MB", 2000))
     download_path: Path = field(
         default_factory=lambda: Path(os.getenv("DOWNLOAD_PATH", "./temp_downloads"))
     )

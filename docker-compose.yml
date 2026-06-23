@@ -15,12 +15,16 @@ services:
       - ./logs:/app/logs
     environment:
       - PYTHONUNBUFFERED=1
-    # Resource limits (tune for your VPS)
+    # Resource limits.
+    # Memory is set to 2.5 GB to give comfortable headroom for a 2 GB download
+    # (the file lives on disk, but the upload buffer and yt-dlp metadata
+    # can add ~200-300 MB of process RSS on top of a large file).
+    # Tune cpus downward on a shared VPS if needed.
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 512M
+          cpus: "2.0"
+          memory: 2500M
     logging:
       driver: "json-file"
       options:

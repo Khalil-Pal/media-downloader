@@ -8,7 +8,6 @@ import zoneinfo
 
 # Configure your timezone and hours here
 TIMEZONE = zoneinfo.ZoneInfo("Asia/Jerusalem")
-
 WORKING_HOURS: dict[int, tuple[time, time]] = {
     0: (time(9, 0), time(15, 0)),   # Monday
     1: (time(9, 0), time(15, 0)),   # Tuesday

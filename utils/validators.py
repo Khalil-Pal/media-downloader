@@ -6,13 +6,17 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse
 
-# Platforms explicitly supported by yt-dlp that we advertise
+# Platforms explicitly supported by yt-dlp that we advertise.
+# Threads uses the Instagram/Meta extractor in yt-dlp (no extra install needed).
 SUPPORTED_PLATFORMS: dict[str, re.Pattern[str]] = {
     "YouTube": re.compile(
         r"(youtube\.com/(watch|shorts|live)|youtu\.be/)", re.IGNORECASE
     ),
     "Instagram": re.compile(
         r"instagram\.com/(p|reel|tv)/", re.IGNORECASE
+    ),
+    "Threads": re.compile(
+        r"threads\.net/@[\w.]+/post/", re.IGNORECASE
     ),
     "Facebook": re.compile(
         r"(facebook\.com|fb\.watch)/.*(videos|watch|reel)", re.IGNORECASE

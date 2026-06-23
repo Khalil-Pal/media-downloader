@@ -24,7 +24,9 @@ router = Router(name="downloader")
 
 _active_downloads: set[int] = set()
 
-SMALL_FILE_LIMIT = 50 * 1024 * 1024  # 50MB aiogram limit
+# Files at or below this size upload via the Bot API (aiogram FSInputFile).
+# Files above it route through Telethon (MTProto) which supports up to 2 GB.
+SMALL_FILE_LIMIT = 50 * 1024 * 1024  # 50 MB
 
 
 async def _run_download(
@@ -36,14 +38,13 @@ async def _run_download(
 ) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
 
-
-    # Rate limit check
+    # ── Rate limit check ──────────────────────────────────────────────────
     allowed, reason = await rate_limiter.check(user_id)
     if not allowed:
         await message.answer(reason)
         return
 
-    # One download at a time per user
+    # ── One download at a time per user ───────────────────────────────────
     if user_id in _active_downloads:
         await message.answer(
             "⚠️ You already have an active download. "
@@ -56,6 +57,7 @@ async def _run_download(
     result = None
 
     try:
+        # ── Metadata fetch ────────────────────────────────────────────────
         try:
             info = await fetch_info(url)
         except ValueError as exc:
@@ -74,12 +76,14 @@ async def _run_download(
         )
         await status_msg.edit_text(preview, parse_mode="Markdown")
 
+        # ── Progress callback (edits the status message in-place) ─────────
         async def on_progress(msg_text: str) -> None:
             try:
                 await status_msg.edit_text(msg_text)
             except Exception:
                 pass
 
+        # ── Download ──────────────────────────────────────────────────────
         result = await download_media(
             url=url,
             user_id=user_id,
@@ -104,8 +108,10 @@ async def _run_download(
 
         actual_size = result.file_path.stat().st_size
 
+        # ── Upload ────────────────────────────────────────────────────────
         try:
             if actual_size > SMALL_FILE_LIMIT:
+                # Large file path: Telethon user-account client (up to 2 GB)
                 from services.telethon_uploader import upload_large_file
                 await upload_large_file(
                     chat_id=message.chat.id,
@@ -114,6 +120,7 @@ async def _run_download(
                     is_audio=audio_only,
                 )
             else:
+                # Small file path: standard Bot API
                 file_input = FSInputFile(result.file_path)
                 if audio_only or result.file_path.suffix.lower() == ".mp3":
                     await bot.send_audio(
@@ -155,6 +162,8 @@ async def _run_download(
             cleanup_session(result.file_path)
 
 
+# ── Command handlers ──────────────────────────────────────────────────────────
+
 @router.message(Command("download"))
 async def cmd_download(message: Message, bot: Bot) -> None:
     text = message.text or ""
@@ -163,7 +172,8 @@ async def cmd_download(message: Message, bot: Bot) -> None:
     if len(parts) < 2 or not parts[1].strip():
         await message.answer(
             "📎 Usage: `/download <URL>`\n\n"
-            "Example:\n`/download https://youtu.be/dQw4w9WgXcQ`",
+            "Example:\n`/download https://youtu.be/dQw4w9WgXcQ`\n"
+            "`/download https://www.threads.net/@user/post/ABC123`",
             parse_mode="Markdown",
         )
         return

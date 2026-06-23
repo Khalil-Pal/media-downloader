@@ -9,11 +9,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import AsyncIterator, Callable
+from typing import Callable
 
 import yt_dlp
 
@@ -22,29 +23,29 @@ from utils.formatters import format_duration, format_size, progress_bar
 
 logger = logging.getLogger(__name__)
 
-import os
-import tempfile
 
+# ── Cookie helpers ────────────────────────────────────────────────────────────
 
 def _get_cookies_file() -> str | None:
     """Write YOUTUBE_COOKIES env var to a temp file and return its path."""
     cookies_content = os.getenv("YOUTUBE_COOKIES")
     if not cookies_content:
-        # Fall back to local file if it exists
         if os.path.exists("cookies.txt"):
             return "cookies.txt"
         return None
 
-    # Write to a temporary file
     tmp = tempfile.NamedTemporaryFile(
         mode="w",
         suffix=".txt",
         delete=False,
-        encoding="utf-8"
+        encoding="utf-8",
     )
     tmp.write(cookies_content)
     tmp.close()
     return tmp.name
+
+
+# ── Global concurrency + cancellation ────────────────────────────────────────
 
 # Semaphore caps global concurrent downloads
 _download_semaphore = asyncio.Semaphore(settings.max_concurrent_downloads)
@@ -52,16 +53,21 @@ _download_semaphore = asyncio.Semaphore(settings.max_concurrent_downloads)
 # Per-user cancellation tokens: user_id → asyncio.Event (set = cancel requested)
 _cancel_flags: dict[int, asyncio.Event] = {}
 
+
+# ── Quality format selectors ──────────────────────────────────────────────────
+
 QUALITY_FORMATS: dict[str, str] = {
     "best": "best/bestvideo+bestaudio",
-    "720": "best[height<=720]/bestvideo[height<=720]+bestaudio/best",
-    "480": "best[height<=480]/bestvideo[height<=480]+bestaudio/best",
-    "360": "best[height<=360]/bestvideo[height<=360]+bestaudio/best",
-    "144": "best[height<=144]/bestvideo[height<=144]+bestaudio/best",
+    "720":  "best[height<=720]/bestvideo[height<=720]+bestaudio/best",
+    "480":  "best[height<=480]/bestvideo[height<=480]+bestaudio/best",
+    "360":  "best[height<=360]/bestvideo[height<=360]+bestaudio/best",
+    "144":  "best[height<=144]/bestvideo[height<=144]+bestaudio/best",
 }
 
 AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio"
 
+
+# ── Data classes ──────────────────────────────────────────────────────────────
 
 @dataclass
 class MediaInfo:
@@ -85,6 +91,8 @@ class DownloadResult:
 ProgressCallback = Callable[[str], None]
 
 
+# ── Internals ─────────────────────────────────────────────────────────────────
+
 def _make_session_dir() -> Path:
     """Create a unique temp directory for this download session."""
     session_dir = settings.download_path / str(uuid.uuid4())
@@ -101,13 +109,13 @@ def _build_progress_hook(
     last_update: dict = {"time": 0.0}
 
     def hook(d: dict) -> None:
-        # Check cancellation from the main thread
+        # Check cancellation from the worker thread
         if cancel_event and cancel_event.is_set():
             raise yt_dlp.utils.DownloadError("Download cancelled by user.")
 
         if d["status"] == "downloading" and callback:
             now = time.monotonic()
-            if now - last_update["time"] < 2.0:  # throttle to every 2 s
+            if now - last_update["time"] < 2.0:   # throttle UI updates to every 2 s
                 return
             last_update["time"] = now
 
@@ -118,9 +126,9 @@ def _build_progress_hook(
                 pct = 0.0
 
             downloaded = d.get("downloaded_bytes") or 0
-            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
-            speed = d.get("speed") or 0
-            eta = d.get("eta") or 0
+            total      = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            speed      = d.get("speed") or 0
+            eta        = d.get("eta") or 0
 
             bar = progress_bar(pct)
             size_info = (
@@ -129,7 +137,7 @@ def _build_progress_hook(
                 else format_size(downloaded)
             )
             speed_str = f"{format_size(speed)}/s" if speed else "—"
-            eta_str = f"{eta}s" if eta else "—"
+            eta_str   = f"{eta}s" if eta else "—"
 
             msg = (
                 f"⬇️ Downloading…\n"
@@ -169,6 +177,7 @@ def _extract_info_sync(url: str) -> dict:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)
 
+
 def _download_sync(
     url: str,
     output_path: Path,
@@ -176,7 +185,16 @@ def _download_sync(
     audio_only: bool,
     progress_hook: Callable[[dict], None],
 ) -> tuple[Path, dict]:
-    """Blocking download (run in executor). Returns (file_path, info_dict)."""
+    """
+    Blocking download (run in executor). Returns (file_path, info_dict).
+
+    We intentionally do NOT pass yt-dlp's `max_filesize` option here.
+    That option is estimate-based and will incorrectly reject valid downloads
+    when yt-dlp's reported filesize diverges from reality (common on YouTube,
+    Threads, and other platforms at high resolutions).
+    The real size guard happens *after* the download in download_media(), where
+    we stat the actual file against settings.max_file_size_bytes (default 2 GB).
+    """
     cookies_file = _get_cookies_file()
     outtmpl = str(output_path / "%(title).80s.%(ext)s")
 
@@ -199,7 +217,7 @@ def _download_sync(
         "postprocessors": postprocessors,
         "nocheckcertificate": False,
         "geo_bypass": True,
-        "max_filesize": settings.max_file_size_bytes,
+        # No max_filesize pre-filter – we check the real file size after download.
     }
     if cookies_file:
         ydl_opts["cookiefile"] = cookies_file
@@ -207,18 +225,24 @@ def _download_sync(
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
 
-    # Locate the downloaded file
+    # Locate the downloaded file (pick the largest if multiple exist,
+    # e.g. when FFmpeg merges separate video+audio streams)
     found: Path | None = None
+    largest_size = -1
     for f in output_path.iterdir():
         if f.is_file():
-            found = f
-            break
+            sz = f.stat().st_size
+            if sz > largest_size:
+                largest_size = sz
+                found = f
 
     if not found:
         raise FileNotFoundError("Download completed but output file not found.")
 
     return found, info
 
+
+# ── Public API ────────────────────────────────────────────────────────────────
 
 async def fetch_info(url: str) -> MediaInfo:
     """
@@ -248,7 +272,7 @@ async def fetch_info(url: str) -> MediaInfo:
         platform=info.get("extractor_key", "Unknown"),
         file_size_str=format_size(info.get("filesize") or info.get("filesize_approx")),
         thumbnail_url=info.get("thumbnail"),
-        formats=formats[:6],  # Top 6 quality options
+        formats=formats[:6],
     )
 
 
@@ -285,7 +309,7 @@ async def download_media(
                 hook,
             )
 
-        # Guard: double-check size after download (in case yt-dlp estimate was off)
+        # Real size guard – rejects anything bigger than our configured limit (2 GB)
         actual_size = file_path.stat().st_size
         if actual_size > settings.max_file_size_bytes:
             file_path.unlink(missing_ok=True)
@@ -293,7 +317,7 @@ async def download_media(
                 success=False,
                 error=(
                     f"❌ File is too large ({format_size(actual_size)}). "
-                    f"Max allowed: {settings.max_file_size_mb}MB."
+                    f"Max allowed: {settings.max_file_size_mb} MB."
                 ),
             )
 
@@ -343,7 +367,6 @@ def cleanup_session(file_path: Path | None) -> None:
         try:
             parent = file_path.parent
             file_path.unlink(missing_ok=True)
-            # Remove directory only if it's now empty
             if parent != settings.download_path and not any(parent.iterdir()):
                 parent.rmdir()
         except OSError as exc:
@@ -362,9 +385,11 @@ def _friendly_error(raw: str) -> str:
     if "removed" in lower or "no longer available" in lower:
         return "❌ This content has been removed or is no longer available."
     if "unsupported url" in lower:
-        return "❌ This URL is not supported. Try YouTube, Instagram, or Facebook."
+        return "❌ This URL is not supported. Try YouTube, Instagram, Threads, or Facebook."
     if "too large" in lower or "max filesize" in lower:
-        return f"❌ File exceeds the {settings.max_file_size_mb}MB limit."
+        return f"❌ File exceeds the {settings.max_file_size_mb} MB limit."
     if "network" in lower or "connection" in lower:
         return "❌ Network error. Please try again in a moment."
+    if "login" in lower or "sign in" in lower:
+        return "❌ This content requires a login. Try a public post instead."
     return f"❌ Download failed: {raw[:200]}"
