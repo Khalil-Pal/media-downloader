@@ -15,13 +15,12 @@ DEFAULT_LANGUAGE = "en"
 def _find_locales_dir() -> Path:
     """Locate the locales directory robustly regardless of working directory."""
     candidates = [
-        Path(__file__).resolve().parent.parent / "locales",  # /app/locales when deployed
-        Path.cwd() / "locales",                               # relative to process CWD
+        Path(__file__).resolve().parent.parent / "locales",
+        Path.cwd() / "locales",                              
     ]
     for candidate in candidates:
         if candidate.is_dir():
             return candidate
-    # Return first candidate anyway; load_translations will log the missing files
     return candidates[0]
 
 
