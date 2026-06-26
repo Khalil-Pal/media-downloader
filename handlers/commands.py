@@ -23,10 +23,7 @@ async def cmd_start(message: Message) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
 
     if not has_chosen_language(user_id):
-        await message.answer(
-            t(None, "choose_language"),
-            reply_markup=language_keyboard(),
-        )
+        await message.answer(t(None, "choose_language"), reply_markup=language_keyboard())
         return
 
     lang = get_user_lang_or_default(user_id)
@@ -35,22 +32,21 @@ async def cmd_start(message: Message) -> None:
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
-    user_id = message.from_user.id  # type: ignore[union-attr]
-    lang = get_user_lang_or_default(user_id)
+    lang = get_user_lang_or_default(message.from_user.id)
     await message.answer(t(lang, "help"), parse_mode="Markdown")
 
 
 @router.message(Command("quality"))
 async def cmd_quality(message: Message) -> None:
-    user_id = message.from_user.id  # type: ignore[union-attr]
+    
 
-    lang = get_user_lang_or_default(user_id)
+    lang = get_user_lang_or_default(message.from_user.id)
     await message.answer(t(lang, "quality_options"), parse_mode="Markdown")
 
 
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message) -> None:
-    user_id = message.from_user.id  # type: ignore[union-attr]
+    user_id = message.from_user.id    
     lang = get_user_lang_or_default(user_id)
     if cancel_download(user_id):
         await message.answer(t(lang, "cancel_requested"))
@@ -60,18 +56,18 @@ async def cmd_cancel(message: Message) -> None:
 
 @router.message(Command("stats"))
 async def cmd_stats(message: Message) -> None:
-    user_id = message.from_user.id  # type: ignore[union-attr]
+    user_id = message.from_user.id  
 
     if settings.admin_id and user_id != settings.admin_id:
-        await message.answer("⛔ This command is only available to the bot administrator.")
+        await message.answer("This command is only available to the bot administrator.")
         return
 
     snapshot = await stats.get_snapshot()
     text = (
-        "📊 *Sandy Squirrel – Statistics*\n\n"
-        f"⏱ Uptime: `{snapshot['uptime']}`\n"
-        f"✅ Successful downloads: `{snapshot['total_downloads']}`\n"
-        f"❌ Failed downloads: `{snapshot['failed_downloads']}`\n"
-        f"👥 Unique users: `{snapshot['unique_users']}`"
+        "Sandy Squirrel - Statistics\n\n"
+        "Uptime: " + snapshot["uptime"] + "\n"
+        "Successful downloads: " + str(snapshot["total_downloads"]) + "\n"
+        "Failed downloads: " + str(snapshot["failed_downloads"]) + "\n"
+        "Unique users: " + str(snapshot["unique_users"])
     )
-    await message.answer(text, parse_mode="Markdown")
+    await message.answer(text)

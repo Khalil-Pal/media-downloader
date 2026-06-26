@@ -11,11 +11,7 @@ import logging
 
 from aiogram import Router, F
 from aiogram.filters import Command
-from aiogram.types import (
-    CallbackQuery,
-    InlineKeyboardMarkup,
-    Message,
-)
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from services.user_store import set_user_lang, get_user_lang_or_default
@@ -58,12 +54,5 @@ async def cb_set_language(callback: CallbackQuery) -> None:
     except Exception:
         pass
 
-    await callback.message.answer(  # type: ignore[union-attr]
-        t(lang, "language_changed")
-    )
-
-    effective_lang = get_user_lang_or_default(user_id)
-    await callback.message.answer(  # type: ignore[union-attr]
-        t(effective_lang, "welcome"),
-        parse_mode="Markdown",
-    )
+    await callback.message.answer(t(lang, "language_changed"))
+    await callback.message.answer(t(lang, "welcome"), parse_mode="Markdown")

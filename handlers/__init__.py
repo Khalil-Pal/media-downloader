@@ -9,7 +9,7 @@ from handlers.callbacks import router as callbacks_router
 main_router = Router(name="main")
 main_router.include_router(commands_router)
 main_router.include_router(language_router)
-main_router.include_router(callbacks_router)   # callbacks before downloader
+main_router.include_router(callbacks_router)
 main_router.include_router(downloader_router)
 
 __all__ = ["main_router"]

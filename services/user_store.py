@@ -1,9 +1,4 @@
-"""
-Stores language choices in memory with JSON file-backed persistence so
-preferences survive bot restarts without requiring a database.
 
-Stored values: "en", "ar", "ru"
-"""
 from __future__ import annotations
 
 import json
@@ -23,7 +18,7 @@ def _load() -> None:
         if _STORE_FILE.exists():
             raw = json.loads(_STORE_FILE.read_text(encoding="utf-8"))
             _languages.update({int(k): v for k, v in raw.items()})
-            logger.debug("Loaded %d user language records", len(_languages))
+            
     except Exception as exc:
         logger.warning("Could not load user language store: %s", exc)
 

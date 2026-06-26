@@ -11,13 +11,7 @@ from aiogram.types import FSInputFile, Message
 
 from services import download_media, fetch_info, cleanup_session, stats
 from services.user_store import (get_user_lang_or_default)
-from utils import (
-    is_valid_url,
-    detect_platform,
-    extract_url_from_text,
-    truncate,
-    rate_limiter,
-)
+from utils import is_valid_url, detect_platform, extract_url_from_text, truncate, rate_limiter
 from utils.i18n import t
 from handlers.common import quality_keyboard
 
@@ -26,9 +20,8 @@ router = Router(name="downloader")
 
 _active_downloads: set[int] = set()
 
-# Files at or below this size upload via the Bot API (aiogram FSInputFile).
-# Files above it route through Telethon (MTProto) which supports up to 2 GB.
-SMALL_FILE_LIMIT = 50 * 1024 * 1024  # 50 MB
+
+SMALL_FILE_LIMIT = 50 * 1024 * 1024
 
 
 async def _run_download(
@@ -40,13 +33,13 @@ async def _run_download(
 ) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
     lang = get_user_lang_or_default(user_id)
-    # ── Rate limit check ──────────────────────────────────────────────────
+    # Rate limit check 
     allowed, reason = await rate_limiter.check(user_id)
     if not allowed:
         await message.answer(reason)
         return
 
-    # ── One download at a time per user ───────────────────────────────────
+    #  One download at a time per user
     if user_id in _active_downloads:
         await message.answer(t(lang, "active_download_warning"))
         return
@@ -56,7 +49,7 @@ async def _run_download(
     result = None
 
     try:
-        # ── Metadata fetch ────────────────────────────────────────────────
+        # Metadata fetch
         try:
             info = await fetch_info(url)
         except ValueError as exc:
@@ -65,13 +58,13 @@ async def _run_download(
             return
 
         platform = detect_platform(url)
-        mode = "🎵 Audio" if audio_only else f"📹 {quality.upper()}"
+        mode = "Audio" if audio_only else quality.upper()
         preview = (
-            f"📋 *{truncate(info.title, 80)}*\n"
-            f"👤 {info.uploader}\n"
-            f"⏱ {info.duration}\n"
-            f"🌐 {platform}\n\n"
-            f"⬇️ _{mode}_"
+            "*" + truncate(info.title, 80) + "*\n"
+            + info.uploader + "\n"
+            + info.duration + "\n"
+            + platform + "\n\n"
+            + "Downloading... " + mode
         )
         await status_msg.edit_text(preview, parse_mode="Markdown")
 
@@ -99,10 +92,10 @@ async def _run_download(
         await status_msg.edit_text(t(lang, "uploading"))
 
         caption = (
-            f"🐿️ *{truncate(result.info.title, 60)}*\n"
-            f"👤 {result.info.uploader}  |  "
-            f"⏱ {result.info.duration}  |  "
-            f"📦 {result.info.file_size_str}"
+            "*" + truncate(result.info.title, 60) + "*\n"
+            + result.info.uploader + "  |  "
+            + result.info.duration + "  |  "
+            + result.info.file_size_str
         )
 
         actual_size = result.file_path.stat().st_size
@@ -203,10 +196,8 @@ async def cmd_download(message: Message, bot: Bot) -> None:
 
 @router.message(F.text & F.text.regexp(r"https?://\S+"))
 async def handle_url_message(message: Message, bot: Bot) -> None:
-    user_id = message.from_user.id  # type: ignore[union-attr]
-    lang = get_user_lang_or_default(user_id)
-    text = message.text or ""
-    url = extract_url_from_text(text)
+    lang = get_user_lang_or_default(message.from_user.id)
+    url = extract_url_from_text(message.text or "")
 
     if not url or not is_valid_url(url):
         return

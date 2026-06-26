@@ -34,24 +34,15 @@ def resolve_url(token: str) -> str | None:
 # ── Keyboards ─────────────────────────────────────────────────────────────────
 
 def quality_keyboard(url: str, lang: str = "en") -> InlineKeyboardMarkup:
-    """
-    Inline keyboard for quality selection.
-
-    Uses a short URL token instead of embedding the raw URL so that
-    callback_data never exceeds Telegram's 64-byte hard limit.
-    Max callback_data length here: len("quality:audio:") + 12 = 26 bytes.
-    """
+    
     token = _store_url(url)
     builder = InlineKeyboardBuilder()
-     (t(lang, "btn_best"),  "quality:best:"  + token),
-        (t(lang, "btn_720p"),  "quality:720:"   + token),
-        (t(lang, "btn_480p"),  "quality:480:"   + token),
-        (t(lang, "btn_360p"),  "quality:360:"   + token),
-        (t(lang, "btn_144p"),  "quality:144:"   + token),
-        (t(lang, "btn_audio"), "quality:audio:" + token),
-    ]
-    for label, data in options:
-        builder.button(text=label, callback_data=data)
+    builder.button(text=t(lang, "btn_best"),  callback_data="quality:best:"  + token)
+    builder.button(text=t(lang, "btn_720p"),  callback_data="quality:720:"   + token)
+    builder.button(text=t(lang, "btn_480p"),  callback_data="quality:480:"   + token)
+    builder.button(text=t(lang, "btn_360p"),  callback_data="quality:360:"   + token)
+    builder.button(text=t(lang, "btn_144p"),  callback_data="quality:144:"   + token)
+    builder.button(text=t(lang, "btn_audio"), callback_data="quality:audio:" + token)
     builder.adjust(2)
     return builder.as_markup()
 
