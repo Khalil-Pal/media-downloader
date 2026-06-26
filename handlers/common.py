@@ -1,12 +1,5 @@
 """
-handlers/common.py – Shared keyboards, URL token store, and static message text.
-
-Why the URL token store?
-    Telegram caps callback_data at 64 bytes. Pasting a full URL directly into
-    callback_data silently truncates anything past byte 64, corrupting the URL.
-    Instead we store the real URL in a small in-process dict and put only a
-    12-character token in the callback. The token round-trips safely and the
-    actual URL is looked up in cb_quality() via resolve_url().
+handlers/common.py – Shared keyboards and URL token store.
 """
 from __future__ import annotations
 
@@ -15,6 +8,7 @@ from collections import OrderedDict
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from utils.i18n import t
 
 # ── URL Token Store ───────────────────────────────────────────────────────────
 
@@ -26,7 +20,7 @@ def _store_url(url: str) -> str:
     """Persist *url* and return a 12-character hex token for callback_data."""
     token = uuid.uuid4().hex[:12]
     _URL_STORE[token] = url
-    # Evict oldest entry if we've grown too large
+
     if len(_URL_STORE) > _URL_STORE_MAX:
         _URL_STORE.popitem(last=False)
     return token
@@ -39,7 +33,7 @@ def resolve_url(token: str) -> str | None:
 
 # ── Keyboards ─────────────────────────────────────────────────────────────────
 
-def quality_keyboard(url: str) -> InlineKeyboardMarkup:
+def quality_keyboard(url: str, lang: str = "en") -> InlineKeyboardMarkup:
     """
     Inline keyboard for quality selection.
 
@@ -49,13 +43,12 @@ def quality_keyboard(url: str) -> InlineKeyboardMarkup:
     """
     token = _store_url(url)
     builder = InlineKeyboardBuilder()
-    options = [
-        ("🥇 Best",       f"quality:best:{token}"),
-        ("📺 720p",       f"quality:720:{token}"),
-        ("📱 480p",       f"quality:480:{token}"),
-        ("🔻 360p",       f"quality:360:{token}"),
-        ("🔍 144p",       f"quality:144:{token}"),
-        ("🎵 Audio only", f"quality:audio:{token}"),
+    (t(lang, "btn_best"), f"quality:best:{token}"),
+    (t(lang, "btn_720p"), f"quality:720:{token}"),
+    (t(lang, "btn_480p"), f"quality:480:{token}"),
+    (t(lang, "btn_360p"), f"quality:360:{token}"),
+    (t(lang, "btn_144p"), f"quality:144:{token}"),
+    (t(lang, "btn_audio"), f"quality:audio:{token}"),
     ]
     for label, data in options:
         builder.button(text=label, callback_data=data)
@@ -63,72 +56,7 @@ def quality_keyboard(url: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def cancel_keyboard(user_id: int) -> InlineKeyboardMarkup:
+def cancel_keyboard(user_id: int, lang: str = "en") -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="❌ Cancel", callback_data=f"cancel:{user_id}")
+    builder.button(text=t(lang, "btn_cancel"), callback_data=f"cancel:{user_id}")
     return builder.as_markup()
-
-
-# ── Static message text ───────────────────────────────────────────────────────
-
-WELCOME_TEXT = """
-🐿️ *Welcome to Sandy Squirrel!*
-
-I can download videos and audio from YouTube, Instagram, *Threads*, Facebook, TikTok, Twitter/X, Vimeo, Reddit, and more.
-
-*How to use me:*
-• Just paste a video URL and I'll download it for you
-• Use /download or /audio followed by a URL
-• Choose your preferred quality when prompted
-
-*Commands:*
-/start — Show this message
-/help — Detailed instructions
-/download `<url>` — Download video
-/audio `<url>` — Download audio only
-/quality — Supported quality options
-/cancel — Cancel current download
-/stats — Bot statistics _(admin only)_
-
-*Supported platforms:*
-▶️ YouTube  📸 Instagram  🧵 Threads
-👤 Facebook  🎵 TikTok  🐦 Twitter/X
-🎬 Vimeo  🔗 Reddit  📅 Dailymotion
-
-Ready to download? Send me a link! 🚀
-""".strip()
-
-HELP_TEXT = """
-📖 *Sandy Squirrel – Help Guide*
-
-*Downloading a video:*
-Simply paste a URL, or use:
-`/download https://youtube.com/watch?v=...`
-
-*Threads example:*
-`/download https://www.threads.net/@user/post/ABC123`
-
-*Downloading audio only:*
-`/audio https://youtube.com/watch?v=...`
-
-*Quality selection:*
-After sending a URL you'll get quality options:
-• 🥇 Best – Highest available quality
-• 📺 720p – HD video
-• 📱 480p – Standard definition
-• 🔻 360p – Low bandwidth
-• 🔍 144p – Minimum quality
-• 🎵 Audio – MP3 audio only
-
-*Limitations:*
-• Max file size: 2 GB (files over 50 MB upload via Telethon)
-• Private/age-restricted content is not supported
-• Geo-blocked content may not be available
-
-*Tips:*
-• For large YouTube videos, try 360p or audio-only
-• Instagram Reels, Stories, and Threads posts are supported
-• Use /cancel if a download is taking too long
-
-Need more help? Just send a URL and I'll handle the rest! 🐿️
-""".strip()

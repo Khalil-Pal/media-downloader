@@ -11,44 +11,51 @@ from aiogram.types import Message
 
 from config.settings import settings
 from services import cancel_download, stats
-from handlers.common import WELCOME_TEXT, HELP_TEXT
-
+from services.user_store import get_user_lang, get_user_lang_or_default, has_chosen_language
+from handlers.language import language_keyboard
+from utils.i18n import t
 logger = logging.getLogger(__name__)
 router = Router(name="commands")
 
 
 @router.message(Command("start"))
 async def cmd_start(message: Message) -> None:
-    await message.answer(WELCOME_TEXT, parse_mode="Markdown")
+    user_id = message.from_user.id  # type: ignore[union-attr]
+
+    if not has_chosen_language(user_id):
+        await message.answer(
+            t(None, "choose_language"),
+            reply_markup=language_keyboard(),
+        )
+        return
+
+    lang = get_user_lang_or_default(user_id)
+    await message.answer(t(lang, "welcome"), parse_mode="Markdown")
 
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
-    await message.answer(HELP_TEXT, parse_mode="Markdown")
+    user_id = message.from_user.id  # type: ignore[union-attr]
+    lang = get_user_lang_or_default(user_id)
+    await message.answer(t(lang, "help"), parse_mode="Markdown")
 
 
 @router.message(Command("quality"))
 async def cmd_quality(message: Message) -> None:
-    text = (
-        "🎚 *Available Quality Options*\n\n"
-        "• 🥇 *Best* – Highest available resolution + audio\n"
-        "• 📺 *720p* – HD (recommended for most use cases)\n"
-        "• 📱 *480p* – Standard definition\n"
-        "• 🔻 *360p* – Low bandwidth\n"
-        "• 🔍 *144p* – Minimum quality\n"
-        "• 🎵 *Audio* – MP3 audio only (no video)\n\n"
-        "Quality options appear automatically after you send a URL."
-    )
-    await message.answer(text, parse_mode="Markdown")
+    user_id = message.from_user.id  # type: ignore[union-attr]
+
+    lang = get_user_lang_or_default(user_id)
+    await message.answer(t(lang, "quality_options"), parse_mode="Markdown")
 
 
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
+    lang = get_user_lang_or_default(user_id)
     if cancel_download(user_id):
-        await message.answer("🛑 Cancellation requested. Your download will stop shortly.")
+        await message.answer(t(lang, "cancel_requested"))
     else:
-        await message.answer("ℹ️ No active download to cancel.")
+        await message.answer(t(lang, "no_active_download"))
 
 
 @router.message(Command("stats"))
