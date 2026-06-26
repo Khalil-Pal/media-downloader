@@ -12,8 +12,20 @@ logger = logging.getLogger(__name__)
 SUPPORTED_LANGUAGES = ("en", "ar", "ru")
 DEFAULT_LANGUAGE = "en"
 
-_LOCALES_DIR = Path(__file__).parent.parent / "locales"
-_translations: dict[str, dict[str, str]] = {}
+def _find_locales_dir() -> Path:
+    """Locate the locales directory robustly regardless of working directory."""
+    candidates = [
+        Path(__file__).resolve().parent.parent / "locales",  # /app/locales when deployed
+        Path.cwd() / "locales",                               # relative to process CWD
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    # Return first candidate anyway; load_translations will log the missing files
+    return candidates[0]
+
+
+_LOCALES_DIR = _find_locales_dir()_translations: dict[str, dict[str, str]] = {}
 
 
 def load_translations() -> None:
