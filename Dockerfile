@@ -41,7 +41,7 @@ COPY --from=builder /install /usr/local
 COPY --chown=sandybot:sandybot . .
 
 # Create directories the bot needs
-RUN mkdir -p temp_downloads logs
+RUN mkdir -p temp_downloads logs data
 
 # Default environment (override via .env or docker-compose)
 ENV PYTHONUNBUFFERED=1 \
