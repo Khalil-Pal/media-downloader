@@ -24,13 +24,7 @@ _active_downloads: set[int] = set()
 SMALL_FILE_LIMIT = 50 * 1024 * 1024
 
 
-async def _run_download(
-    message: Message,
-    bot: Bot,
-    url: str,
-    quality: str = "best",
-    audio_only: bool = False,
-) -> None:
+async def _run_download(message, bot, url, quality="best", audio_only=False):
     user_id = message.from_user.id  # type: ignore[union-attr]
     lang = get_user_lang_or_default(user_id)
     # Rate limit check 
@@ -59,17 +53,11 @@ async def _run_download(
 
         platform = detect_platform(url)
         mode = "Audio" if audio_only else quality.upper()
-        preview = (
-            "*" + truncate(info.title, 80) + "*\n"
-            + info.uploader + "\n"
-            + info.duration + "\n"
-            + platform + "\n\n"
-            + "Downloading... " + mode
-        )
+        preview = "*" + truncate(info.title, 80) + "*\n" + info.uploader + "\n" + info.duration + "\n" + platform + "\n\nDownloading " + mode
         await status_msg.edit_text(preview, parse_mode="Markdown")
 
         # ── Progress callback (edits the status message in-place) ─────────
-        async def on_progress(msg_text: str) -> None:
+         async def on_progress(msg_text):
             try:
                 await status_msg.edit_text(msg_text)
             except Exception:
@@ -77,11 +65,8 @@ async def _run_download(
 
         # ── Download ──────────────────────────────────────────────────────
         result = await download_media(
-            url=url,
-            user_id=user_id,
-            quality=quality,
-            audio_only=audio_only,
-            progress_callback=on_progress,
+           url=url, user_id=user_id, quality=quality,
+            audio_only=audio_only, progress_callback=on_progress,
         )
 
         if not result.success or not result.file_path:

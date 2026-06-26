@@ -35,8 +35,8 @@ def _save() -> None:
         logger.warning("Could not save user language store: %s", exc)
 
 
-def get_user_lang(user_id: int) -> str | None:
-    """Return the user's chosen language code, or None if not yet selected."""
+def get_user_lang(user_id: int):
+        """Return the user's chosen language code, or None if not yet selected."""
     return _languages.get(user_id)
 
 

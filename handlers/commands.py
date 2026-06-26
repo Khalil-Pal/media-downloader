@@ -63,11 +63,12 @@ async def cmd_stats(message: Message) -> None:
         return
 
     snapshot = await stats.get_snapshot()
-    text = (
-        "Sandy Squirrel - Statistics\n\n"
-        "Uptime: " + snapshot["uptime"] + "\n"
-        "Successful downloads: " + str(snapshot["total_downloads"]) + "\n"
-        "Failed downloads: " + str(snapshot["failed_downloads"]) + "\n"
-        "Unique users: " + str(snapshot["unique_users"])
-    )
-    await message.answer(text)
+    lines = [
+        "Sandy Squirrel - Statistics",
+        "",
+        "Uptime: " + snapshot["uptime"],
+        "Successful: " + str(snapshot["total_downloads"]),
+        "Failed: " + str(snapshot["failed_downloads"]),
+        "Users: " + str(snapshot["unique_users"]),
+    ]
+    await message.answer("\n".join(lines))

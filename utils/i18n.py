@@ -48,8 +48,7 @@ def load_translations() -> None:
             _translations[lang] = {}
 
 
-def t(lang: str | None, key: str, **kwargs: object) -> str:
-
+def t(lang, key, **kwargs):
    effective = lang if lang in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE
 
     text = (

@@ -26,8 +26,8 @@ def _store_url(url: str) -> str:
     return token
 
 
-def resolve_url(token: str) -> str | None:
-    """Return the URL stored under *token*, or None if it has expired / is unknown."""
+def resolve_url(token: str):
+        """Return the URL stored under *token*, or None if it has expired / is unknown."""
     return _URL_STORE.get(token)
 
 

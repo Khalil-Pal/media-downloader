@@ -1,13 +1,7 @@
-"""
-handlers/callbacks.py – Inline keyboard callback handlers (quality selection, cancel)
-"""
 from __future__ import annotations
-
 import logging
-
 from aiogram import Bot, Router, F
 from aiogram.types import CallbackQuery
-
 from services.user_store import get_user_lang_or_default
 from utils import extract_url_from_text, is_valid_url
 from utils.i18n import tfrom handlers.common import resolve_url
