@@ -43,6 +43,8 @@ COPY --chown=sandybot:sandybot . .
 # Create directories the bot needs
 RUN mkdir -p temp_downloads logs data
 
+RUN python setup_multilang.py
+
 # Default environment (override via .env or docker-compose)
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
