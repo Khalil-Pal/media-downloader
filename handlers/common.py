@@ -6,7 +6,7 @@ from __future__ import annotations
 import uuid
 from collections import OrderedDict
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from utils.i18n import t
 
@@ -43,12 +43,12 @@ def quality_keyboard(url: str, lang: str = "en") -> InlineKeyboardMarkup:
     """
     token = _store_url(url)
     builder = InlineKeyboardBuilder()
-    (t(lang, "btn_best"), f"quality:best:{token}"),
-    (t(lang, "btn_720p"), f"quality:720:{token}"),
-    (t(lang, "btn_480p"), f"quality:480:{token}"),
-    (t(lang, "btn_360p"), f"quality:360:{token}"),
-    (t(lang, "btn_144p"), f"quality:144:{token}"),
-    (t(lang, "btn_audio"), f"quality:audio:{token}"),
+     (t(lang, "btn_best"),  "quality:best:"  + token),
+        (t(lang, "btn_720p"),  "quality:720:"   + token),
+        (t(lang, "btn_480p"),  "quality:480:"   + token),
+        (t(lang, "btn_360p"),  "quality:360:"   + token),
+        (t(lang, "btn_144p"),  "quality:144:"   + token),
+        (t(lang, "btn_audio"), "quality:audio:" + token),
     ]
     for label, data in options:
         builder.button(text=label, callback_data=data)
@@ -58,5 +58,6 @@ def quality_keyboard(url: str, lang: str = "en") -> InlineKeyboardMarkup:
 
 def cancel_keyboard(user_id: int, lang: str = "en") -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text=t(lang, "btn_cancel"), callback_data=f"cancel:{user_id}")
+builder.button(text=t(lang, "btn_cancel"), 
+callback_data="cancel:" + str(user_id))
     return builder.as_markup()

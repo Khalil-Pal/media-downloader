@@ -11,35 +11,45 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGUAGES = ("en", "ar", "ru")
 DEFAULT_LANGUAGE = "en"
-
-def _find_locales_dir() -> Path:
-    """Locate the locales directory robustly regardless of working directory."""
-    candidates = [
-        Path(__file__).resolve().parent.parent / "locales",
-        Path.cwd() / "locales",                              
-    ]
-    for candidate in candidates:
-        if candidate.is_dir():
-            return candidate
-    # Return first candidate anyway; load_translations will log the missing files
-    return candidates[0]
-
-
-_LOCALES_DIR = _find_locales_dir()
 _translations: dict[str, dict[str, str]] = {}
 
 
+def _find_locale_file(lang: str) -> Path | None:
+    """
+    Search several candidate locations for <lang>.json.
+    Supports both layouts:
+      - locales/<lang>.json  (preferred)
+      - <lang>.json          (root-level fallback)
+    """
+    here = Path(__file__).resolve().parent.parent  # project root when installed normally
+    cwd = Path.cwd()
+
+    candidates = [
+        here / "locales" / f"{lang}.json",
+        cwd / "locales" / f"{lang}.json",
+        here / f"{lang}.json",
+        cwd / f"{lang}.json",
+    ]
+
+    for path in candidates:
+        if path.is_file():
+            return path
+
+    return None
+
+
 def load_translations() -> None:
-    """Load all locale JSON files into memory. Call once at startup."""
+    """Load all locale JSON files into memory. Called once at module import."""
     for lang in SUPPORTED_LANGUAGES:
-        path = _LOCALES_DIR / f"{lang}.json"
+        path = _find_locale_file(lang)
+        if path is None:
+            logger.warning("Locale file not found for language: %s (tried locales/%s.json and %s.json)", lang, lang, lang)
+            _translations[lang] = {}
+            continue
         try:
             with path.open(encoding="utf-8") as f:
                 _translations[lang] = json.load(f)
-            logger.debug("Loaded locale: %s (%d keys)", lang, len(_translations[lang]))
-        except FileNotFoundError:
-            logger.warning("Locale file not found: %s", path)
-            _translations[lang] = {}
+            logger.debug("Loaded locale %s from %s (%d keys)", lang, path, len(_translations[lang]))
         except json.JSONDecodeError as exc:
             logger.error("Failed to parse locale file %s: %s", path, exc)
             _translations[lang] = {}
