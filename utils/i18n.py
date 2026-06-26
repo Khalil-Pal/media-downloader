@@ -21,10 +21,12 @@ def _find_locales_dir() -> Path:
     for candidate in candidates:
         if candidate.is_dir():
             return candidate
+    # Return first candidate anyway; load_translations will log the missing files
     return candidates[0]
 
 
-_LOCALES_DIR = _find_locales_dir()_translations: dict[str, dict[str, str]] = {}
+_LOCALES_DIR = _find_locales_dir()
+_translations: dict[str, dict[str, str]] = {}
 
 
 def load_translations() -> None:
