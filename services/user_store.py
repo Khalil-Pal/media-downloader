@@ -6,55 +6,67 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_STORE_FILE = Path("./data/user_languages.json")
-_USERS_FILE = Path("./data/all_users.json")
+# Single file for everything — easier to persist on Railway
+_STORE_FILE = Path("./data/user_store.json")
 _languages: dict[int, str] = {}
 _all_users: set[int] = set()
 
+
 def _load() -> None:
-    """Load persisted language map from disk."""
     try:
         _STORE_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+        # Try new unified format first
         if _STORE_FILE.exists():
             raw = json.loads(_STORE_FILE.read_text(encoding="utf-8"))
+            _languages.update({int(k): v for k, v in raw.get("languages", {}).items()})
+            _all_users.update(int(u) for u in raw.get("users", []))
+            logger.info("Loaded %d users, %d languages from store", len(_all_users), len(_languages))
+            return
+
+        # Fall back to old separate files if they exist
+        old_lang = Path("./data/user_languages.json")
+        old_users = Path("./data/all_users.json")
+
+        if old_lang.exists():
+            raw = json.loads(old_lang.read_text(encoding="utf-8"))
             _languages.update({int(k): v for k, v in raw.items()})
-    except Exception as exc:
-        logger.warning("Could not load user language store: %s", exc)
-    try:
-        if _USERS_FILE.exists():
-            raw2 = json.loads(_USERS_FILE.read_text(encoding="utf-8"))
+
+        if old_users.exists():
+            raw2 = json.loads(old_users.read_text(encoding="utf-8"))
             _all_users.update(int(u) for u in raw2)
+
+        # Always include language users in all_users
+        _all_users.update(_languages.keys())
+
+        # Migrate to new format
+        if _languages or _all_users:
+            _save()
+            logger.info("Migrated old store files → %s", _STORE_FILE)
+
     except Exception as exc:
-        logger.warning("Could not load all-users store: %s", exc)
+        logger.warning("Could not load user store: %s", exc)
 
 
 def _save() -> None:
-    """Persist language map to disk."""
     try:
         _STORE_FILE.parent.mkdir(parents=True, exist_ok=True)
         _STORE_FILE.write_text(
-            json.dumps({str(k): v for k, v in _languages.items()}, ensure_ascii=False),
+            json.dumps({
+                "languages": {str(k): v for k, v in _languages.items()},
+                "users": list(_all_users),
+            }, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
     except Exception as exc:
-        logger.warning("Could not save user language store: %s", exc)
-
-
-def _save_users() -> None:
-    try:
-        _USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _USERS_FILE.write_text(
-            json.dumps(list(_all_users), ensure_ascii=False),
-            encoding="utf-8",
-        )
-    except Exception as exc:
-        logger.warning("Could not save all-users store: %s", exc)
+        logger.warning("Could not save user store: %s", exc)
 
 
 def register_user(user_id: int) -> None:
+    """Track every user who interacts with the bot."""
     if user_id not in _all_users:
         _all_users.add(user_id)
-        _save_users()
+        _save()
 
 
 def get_all_user_ids() -> list[int]:
@@ -66,23 +78,20 @@ def user_count() -> int:
 
 
 def get_user_lang(user_id: int):
-    """Return the user's chosen language code, or None if not yet selected."""
     return _languages.get(user_id)
 
 
 def get_user_lang_or_default(user_id: int, default: str = "en") -> str:
-    """Return the user's language code, defaulting to *default* if not set."""
     return _languages.get(user_id) or default
 
 
 def set_user_lang(user_id: int, lang: str) -> None:
-    """Persist a language choice for a user."""
     _languages[user_id] = lang
+    _all_users.add(user_id)  # also register them
     _save()
 
 
 def has_chosen_language(user_id: int) -> bool:
-    """True if the user has already picked a language."""
     return user_id in _languages
 
 
