@@ -79,9 +79,6 @@ async def main() -> None:
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(main_router)
 
-    # Graceful startup log
-    me = await bot.get_me()
-    logger.info("Bot started as @%s (id=%d)", me.username, me.id)
     logger.info(
         "Config: max_file=%dMB | concurrency=%d | rate=%d/%ds",
         settings.max_file_size_mb,
@@ -90,7 +87,10 @@ async def main() -> None:
         settings.rate_limit_window,
     )
 
-    await _register_commands(bot)
+    try:
+        await _register_commands(bot)
+    except Exception as exc:
+        logger.warning("Could not register commands (non-fatal): %s", exc)
     
     try:
         await dp.start_polling(
