@@ -33,10 +33,6 @@ async def cmd_users(message: Message) -> None:
 
 @router.message(Command("addme"))
 async def cmd_addme(message: Message) -> None:
-    """
-    Admin-only: register yourself into the DB manually.
-    Run this once after deploy to make sure you're in the users list.
-    """
     if not _is_admin(message.from_user.id):
         return
     register_user(message.from_user.id)
@@ -52,7 +48,6 @@ async def cmd_broadcast(message: Message, bot: Bot) -> None:
     if not _is_admin(message.from_user.id):
         return
 
-    # Make sure the admin is always registered
     register_user(message.from_user.id)
 
     text = message.text or ""
@@ -62,10 +57,12 @@ async def cmd_broadcast(message: Message, bot: Bot) -> None:
         await message.answer(
             "<b>📢 Broadcast Usage</b>\n\n"
             "<code>/broadcast Your message here</code>\n\n"
-            "You can use HTML tags:\n"
+            "Supported HTML tags:\n"
             "• <code>&lt;b&gt;bold&lt;/b&gt;</code>\n"
             "• <code>&lt;i&gt;italic&lt;/i&gt;</code>\n"
+            "• <code>&lt;u&gt;underline&lt;/u&gt;</code>\n"
             "• <code>&lt;code&gt;monospace&lt;/code&gt;</code>\n\n"
+            "⚠️ Do NOT use &lt;h1&gt;, &lt;div&gt;, &lt;p&gt; — Telegram doesn't support them.\n\n"
             "Current users: <b>" + str(user_count()) + "</b>",
             parse_mode=ParseMode.HTML,
         )
@@ -74,18 +71,12 @@ async def cmd_broadcast(message: Message, bot: Bot) -> None:
     broadcast_text = parts[1].strip()
     user_ids = get_all_user_ids()
 
-    # Always include admin even if list is empty
     if not user_ids:
         register_user(message.from_user.id)
         user_ids = get_all_user_ids()
 
     if not user_ids:
-        await message.answer(
-            "⚠️ No users found in database.\n\n"
-            "Users are registered automatically when they send /start to the bot.\n"
-            "Send /addme to register yourself first.",
-            parse_mode=ParseMode.HTML,
-        )
+        await message.answer("⚠️ No users found. Send /addme first.", parse_mode=ParseMode.HTML)
         return
 
     status = await message.answer(
@@ -96,6 +87,7 @@ async def cmd_broadcast(message: Message, bot: Bot) -> None:
     sent = 0
     failed = 0
     blocked = 0
+    last_error = ""
 
     for uid in user_ids:
         try:
@@ -103,6 +95,7 @@ async def cmd_broadcast(message: Message, bot: Bot) -> None:
             sent += 1
         except Exception as exc:
             err = str(exc).lower()
+            last_error = str(exc)
             if "blocked" in err or "deactivated" in err or "not found" in err or "forbidden" in err:
                 blocked += 1
             else:
@@ -110,11 +103,14 @@ async def cmd_broadcast(message: Message, bot: Bot) -> None:
                 logger.warning("Broadcast failed for user %d: %s", uid, exc)
         await asyncio.sleep(0.05)
 
-    await status.edit_text(
+    result = (
         "<b>✅ Broadcast complete</b>\n\n"
         "👥 Total: <b>" + str(len(user_ids)) + "</b>\n"
         "✅ Sent: <b>" + str(sent) + "</b>\n"
         "🚫 Blocked/deleted: <b>" + str(blocked) + "</b>\n"
-        "❌ Failed: <b>" + str(failed) + "</b>",
-        parse_mode=ParseMode.HTML,
+        "❌ Failed: <b>" + str(failed) + "</b>"
     )
+    if failed > 0 and last_error:
+        result += "\n\n⚠️ Last error:\n<code>" + last_error[:200] + "</code>"
+
+    await status.edit_text(result, parse_mode=ParseMode.HTML)
