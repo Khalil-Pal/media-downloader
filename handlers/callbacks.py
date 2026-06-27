@@ -4,7 +4,8 @@ from aiogram import Bot, Router, F
 from aiogram.types import CallbackQuery
 from services.user_store import get_user_lang_or_default
 from utils import extract_url_from_text, is_valid_url
-from utils.i18n import tfrom handlers.common import resolve_url
+from utils.i18n import t
+from handlers.common import resolve_url
 
 logger = logging.getLogger(__name__)
 router = Router(name="callbacks")
@@ -30,21 +31,21 @@ async def cb_quality(callback: CallbackQuery, bot: Bot) -> None:
         url = extract_url_from_text(token) or token.strip()
 
     if not is_valid_url(url):
-    await callback.message.answer(t(lang, "expired_url"))        
-    return
+        await callback.message.answer(t(lang, "expired_url"))
+        return
 
     audio_only = quality == "audio"
     effective_quality = "best" if audio_only else quality
 
     try:
-        await callback.message.delete()  
+        await callback.message.delete()
     except Exception:
         pass
 
     from handlers.downloader_handler import _run_download
 
     await _run_download(
-        message=callback.message,  
+        message=callback.message,
         bot=bot,
         url=url,
         quality=effective_quality,
@@ -64,6 +65,6 @@ async def cb_cancel(callback: CallbackQuery) -> None:
     cancel_download(user_id)
 
     try:
-        await callback.message.edit_text(t(lang, "download_cancelled"))  
+        await callback.message.edit_text(t(lang, "download_cancelled"))
     except Exception:
         pass

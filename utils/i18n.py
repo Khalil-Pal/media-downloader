@@ -41,7 +41,7 @@ def load_translations() -> None:
             _translations[lang] = {}
             continue
         try:
-           with path.open(encoding="utf-8") as fh:
+            with path.open(encoding="utf-8") as fh:
                 _translations[lang] = json.load(fh)
         except Exception as exc:
             logger.error("Failed to load locale %s: %s", lang, exc)
@@ -49,7 +49,7 @@ def load_translations() -> None:
 
 
 def t(lang, key, **kwargs):
-   effective = lang if lang in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE
+    effective = lang if lang in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE
 
     text = (
         _translations.get(effective, {}).get(key)

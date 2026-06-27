@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import json
@@ -18,7 +17,6 @@ def _load() -> None:
         if _STORE_FILE.exists():
             raw = json.loads(_STORE_FILE.read_text(encoding="utf-8"))
             _languages.update({int(k): v for k, v in raw.items()})
-            
     except Exception as exc:
         logger.warning("Could not load user language store: %s", exc)
 
@@ -36,7 +34,7 @@ def _save() -> None:
 
 
 def get_user_lang(user_id: int):
-        """Return the user's chosen language code, or None if not yet selected."""
+    """Return the user's chosen language code, or None if not yet selected."""
     return _languages.get(user_id)
 
 

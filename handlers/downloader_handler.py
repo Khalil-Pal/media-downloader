@@ -10,7 +10,7 @@ from aiogram.filters import Command
 from aiogram.types import FSInputFile, Message
 
 from services import download_media, fetch_info, cleanup_session, stats
-from services.user_store import (get_user_lang_or_default)
+from services.user_store import get_user_lang_or_default
 from utils import is_valid_url, detect_platform, extract_url_from_text, truncate, rate_limiter
 from utils.i18n import t
 from handlers.common import quality_keyboard
@@ -20,20 +20,20 @@ router = Router(name="downloader")
 
 _active_downloads: set[int] = set()
 
-
 SMALL_FILE_LIMIT = 50 * 1024 * 1024
 
 
 async def _run_download(message, bot, url, quality="best", audio_only=False):
     user_id = message.from_user.id  # type: ignore[union-attr]
     lang = get_user_lang_or_default(user_id)
-    # Rate limit check 
+
+    # Rate limit check
     allowed, reason = await rate_limiter.check(user_id)
     if not allowed:
         await message.answer(reason)
         return
 
-    #  One download at a time per user
+    # One download at a time per user
     if user_id in _active_downloads:
         await message.answer(t(lang, "active_download_warning"))
         return
@@ -53,11 +53,16 @@ async def _run_download(message, bot, url, quality="best", audio_only=False):
 
         platform = detect_platform(url)
         mode = "Audio" if audio_only else quality.upper()
-        preview = "*" + truncate(info.title, 80) + "*\n" + info.uploader + "\n" + info.duration + "\n" + platform + "\n\nDownloading " + mode
+        preview = (
+            "*" + truncate(info.title, 80) + "*\n"
+            + info.uploader + "\n"
+            + info.duration + "\n"
+            + platform + "\n\nDownloading " + mode
+        )
         await status_msg.edit_text(preview, parse_mode="Markdown")
 
         # ── Progress callback (edits the status message in-place) ─────────
-         async def on_progress(msg_text):
+        async def on_progress(msg_text):
             try:
                 await status_msg.edit_text(msg_text)
             except Exception:
@@ -65,7 +70,7 @@ async def _run_download(message, bot, url, quality="best", audio_only=False):
 
         # ── Download ──────────────────────────────────────────────────────
         result = await download_media(
-           url=url, user_id=user_id, quality=quality,
+            url=url, user_id=user_id, quality=quality,
             audio_only=audio_only, progress_callback=on_progress,
         )
 
@@ -88,7 +93,6 @@ async def _run_download(message, bot, url, quality="best", audio_only=False):
         # ── Upload ────────────────────────────────────────────────────────
         try:
             if actual_size > SMALL_FILE_LIMIT:
-
                 from services.telethon_uploader import upload_large_file
                 await upload_large_file(
                     chat_id=message.chat.id,
@@ -97,7 +101,6 @@ async def _run_download(message, bot, url, quality="best", audio_only=False):
                     is_audio=audio_only,
                 )
             else:
-
                 file_input = FSInputFile(result.file_path)
                 if audio_only or result.file_path.suffix.lower() == ".mp3":
                     await bot.send_audio(
@@ -160,20 +163,21 @@ async def cmd_download(message: Message, bot: Bot) -> None:
         reply_markup=quality_keyboard(url, lang=lang),
     )
 
-    @router.message(Command("audio"))
-    async def cmd_audio(message: Message, bot: Bot) -> None:
-        user_id = message.from_user.id  # type: ignore[union-attr]
-        lang = get_user_lang_or_default(user_id)
-        text = message.text or ""
-        parts = text.split(maxsplit=1)
 
-        if len(parts) < 2 or not parts[1].strip():
-            await message.answer(t(lang, "audio_usage"), parse_mode="Markdown")
-            return
+@router.message(Command("audio"))
+async def cmd_audio(message: Message, bot: Bot) -> None:
+    user_id = message.from_user.id  # type: ignore[union-attr]
+    lang = get_user_lang_or_default(user_id)
+    text = message.text or ""
+    parts = text.split(maxsplit=1)
 
-        url = extract_url_from_text(parts[1])
-        if not url:
-            await message.answer(t(lang, "invalid_url"))
+    if len(parts) < 2 or not parts[1].strip():
+        await message.answer(t(lang, "audio_usage"), parse_mode="Markdown")
+        return
+
+    url = extract_url_from_text(parts[1])
+    if not url:
+        await message.answer(t(lang, "invalid_url"))
         return
 
     await _run_download(message, bot, url, audio_only=True)
@@ -188,6 +192,6 @@ async def handle_url_message(message: Message, bot: Bot) -> None:
         return
 
     await message.answer(
-          t(lang, "link_detected", url=truncate(url, 70)),
+        t(lang, "link_detected", url=truncate(url, 70)),
         reply_markup=quality_keyboard(url, lang=lang),
     )

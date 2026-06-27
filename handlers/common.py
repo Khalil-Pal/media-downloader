@@ -27,14 +27,13 @@ def _store_url(url: str) -> str:
 
 
 def resolve_url(token: str):
-        """Return the URL stored under *token*, or None if it has expired / is unknown."""
+    """Return the URL stored under *token*, or None if it has expired / is unknown."""
     return _URL_STORE.get(token)
 
 
 # ── Keyboards ─────────────────────────────────────────────────────────────────
 
 def quality_keyboard(url: str, lang: str = "en") -> InlineKeyboardMarkup:
-    
     token = _store_url(url)
     builder = InlineKeyboardBuilder()
     builder.button(text=t(lang, "btn_best"),  callback_data="quality:best:"  + token)
@@ -49,6 +48,5 @@ def quality_keyboard(url: str, lang: str = "en") -> InlineKeyboardMarkup:
 
 def cancel_keyboard(user_id: int, lang: str = "en") -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-builder.button(text=t(lang, "btn_cancel"), 
-callback_data="cancel:" + str(user_id))
+    builder.button(text=t(lang, "btn_cancel"), callback_data="cancel:" + str(user_id))
     return builder.as_markup()
