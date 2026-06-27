@@ -10,7 +10,7 @@ from aiogram.filters import Command
 from aiogram.types import FSInputFile, Message
 
 from services import download_media, fetch_info, cleanup_session, stats
-from services.user_store import get_user_lang_or_default
+from services.user_store import get_user_lang_or_default, register_user
 from utils import is_valid_url, detect_platform, extract_url_from_text, truncate, rate_limiter
 from utils.i18n import t
 from handlers.common import quality_keyboard
@@ -185,6 +185,7 @@ async def cmd_audio(message: Message, bot: Bot) -> None:
 
 @router.message(F.text & F.text.regexp(r"https?://\S+"))
 async def handle_url_message(message: Message, bot: Bot) -> None:
+    register_user(message.from_user.id)
     lang = get_user_lang_or_default(message.from_user.id)
     url = extract_url_from_text(message.text or "")
 

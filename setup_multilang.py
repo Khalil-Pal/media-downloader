@@ -83,8 +83,9 @@ files["services/user_store.py"] = (
     "\n"
     "logger = logging.getLogger(__name__)\n"
     "\n"
-    "_STORE_FILE = Path(\"./data/user_languages.json\")\n"
+    "_USERS_FILE = Path(\"./data/all_users.json\")\n"
     "_languages: dict[int, str] = {}\n"
+    "_all_users: set[int] = set()\n"
     "\n"
     "\n"
     "def _load() -> None:\n"
@@ -95,6 +96,12 @@ files["services/user_store.py"] = (
     "            _languages.update({int(k): v for k, v in raw.items()})\n"
     "    except Exception as exc:\n"
     "        logger.warning(\"Could not load user language store: %s\", exc)\n"
+    "    try:\n"
+    "        if _USERS_FILE.exists():\n"
+    "            raw2 = json.loads(_USERS_FILE.read_text(encoding=\"utf-8\"))\n"
+    "            _all_users.update(int(u) for u in raw2)\n"
+    "    except Exception as exc:\n"
+    "        logger.warning(\"Could not load all-users store: %s\", exc)\n"
     "\n"
     "\n"
     "def _save() -> None:\n"
@@ -106,6 +113,31 @@ files["services/user_store.py"] = (
     "        )\n"
     "    except Exception as exc:\n"
     "        logger.warning(\"Could not save user language store: %s\", exc)\n"
+    "\n"
+    "\n"
+    "def _save_users() -> None:\n"
+    "    try:\n"
+    "        _USERS_FILE.parent.mkdir(parents=True, exist_ok=True)\n"
+    "        _USERS_FILE.write_text(\n"
+    "            json.dumps(list(_all_users), ensure_ascii=False),\n"
+    "            encoding=\"utf-8\",\n"
+    "        )\n"
+    "    except Exception as exc:\n"
+    "        logger.warning(\"Could not save all-users store: %s\", exc)\n"
+    "\n"
+    "\n"
+    "def register_user(user_id: int) -> None:\n"
+    "    if user_id not in _all_users:\n"
+    "        _all_users.add(user_id)\n"
+    "        _save_users()\n"
+    "\n"
+    "\n"
+    "def get_all_user_ids() -> list[int]:\n"
+    "    return list(_all_users)\n"
+    "\n"
+    "\n"
+    "def user_count() -> int:\n"
+    "    return len(_all_users)\n"
     "\n"
     "\n"
     "def get_user_lang(user_id: int):\n"
@@ -238,7 +270,7 @@ files["handlers/commands.py"] = (
     "\n"
     "from config.settings import settings\n"
     "from services import cancel_download, stats\n"
-    "from services.user_store import get_user_lang_or_default, has_chosen_language\n"
+    "from services.user_store import get_user_lang_or_default, has_chosen_language, register_user\n"
     "from handlers.language import language_keyboard\n"
     "from utils.i18n import t\n"
     "\n"
@@ -249,6 +281,7 @@ files["handlers/commands.py"] = (
     "@router.message(Command(\"start\"))\n"
     "async def cmd_start(message: Message) -> None:\n"
     "    user_id = message.from_user.id\n"
+    "    register_user(user_id)\n"
     "    if not has_chosen_language(user_id):\n"
     "        await message.answer(t(None, \"choose_language\"), reply_markup=language_keyboard())\n"
     "        return\n"
@@ -343,6 +376,7 @@ files["handlers/callbacks.py"] = (
     "        url=url,\n"
     "        quality=effective_quality,\n"
     "        audio_only=audio_only,\n"
+    "        user_id=user_id,\n"
     "    )\n"
     "\n"
     "\n"
@@ -370,7 +404,7 @@ files["handlers/downloader_handler.py"] = (
     "from aiogram.types import FSInputFile, Message\n"
     "\n"
     "from services import download_media, fetch_info, cleanup_session, stats\n"
-    "from services.user_store import get_user_lang_or_default\n"
+    "from services.user_store import get_user_lang_or_default, register_user\n"
     "from utils import is_valid_url, detect_platform, extract_url_from_text, truncate, rate_limiter\n"
     "from utils.i18n import t\n"
     "from handlers.common import quality_keyboard\n"
@@ -382,8 +416,9 @@ files["handlers/downloader_handler.py"] = (
     "SMALL_FILE_LIMIT = 50 * 1024 * 1024\n"
     "\n"
     "\n"
-    "async def _run_download(message, bot, url, quality=\"best\", audio_only=False):\n"
-    "    user_id = message.from_user.id\n"
+    "async def _run_download(message, bot, url, quality=\"best\", audio_only=False, user_id=None):\n"
+    "    if user_id is None:\n"
+    "        user_id = message.from_user.id\n"
     "    lang = get_user_lang_or_default(user_id)\n"
     "    allowed, reason = await rate_limiter.check(user_id)\n"
     "    if not allowed:\n"
@@ -495,6 +530,7 @@ files["handlers/downloader_handler.py"] = (
     "\n"
     "@router.message(F.text & F.text.regexp(r\"https?://\\S+\"))\n"
     "async def handle_url_message(message: Message, bot: Bot) -> None:\n"
+    "    register_user(message.from_user.id)\n"
     "    lang = get_user_lang_or_default(message.from_user.id)\n"
     "    url = extract_url_from_text(message.text or \"\")\n"
     "    if not url or not is_valid_url(url):\n"
@@ -506,6 +542,77 @@ files["handlers/downloader_handler.py"] = (
     "    )\n"
 )
 
+# ── handlers/admin.py ─────────────────────────────────────────────────────────
+files["handlers/admin.py"] = (
+    "from __future__ import annotations\n"
+    "\n"
+    "import asyncio\n"
+    "import logging\n"
+    "\n"
+    "from aiogram import Bot, Router\n"
+    "from aiogram.filters import Command\n"
+    "from aiogram.types import Message\n"
+    "\n"
+    "from config.settings import settings\n"
+    "from services.user_store import get_all_user_ids, user_count\n"
+    "\n"
+    "logger = logging.getLogger(__name__)\n"
+    "router = Router(name=\"admin\")\n"
+    "\n"
+    "\n"
+    "def _is_admin(user_id: int) -> bool:\n"
+    "    return bool(settings.admin_id) and user_id == settings.admin_id\n"
+    "\n"
+    "\n"
+    "@router.message(Command(\"users\"))\n"
+    "async def cmd_users(message: Message) -> None:\n"
+    "    if not _is_admin(message.from_user.id):\n"
+    "        return\n"
+    "    total = user_count()\n"
+    "    await message.answer(\n"
+    "        \"<b>User Statistics</b>\\n\\n\"\n"
+    "        \"Total registered users: <b>\" + str(total) + \"</b>\"\n"
+    "    )\n"
+    "\n"
+    "\n"
+    "@router.message(Command(\"broadcast\"))\n"
+    "async def cmd_broadcast(message: Message, bot: Bot) -> None:\n"
+    "    if not _is_admin(message.from_user.id):\n"
+    "        return\n"
+    "    text = message.text or \"\"\n"
+    "    parts = text.split(maxsplit=1)\n"
+    "    if len(parts) < 2 or not parts[1].strip():\n"
+    "        await message.answer(\n"
+    "            \"<b>Broadcast Usage</b>\\n\\n\"\n"
+    "            \"<code>/broadcast Your message here</code>\\n\\n\"\n"
+    "            \"Sends to all registered users.\\n\"\n"
+    "            \"Current users: <b>\" + str(user_count()) + \"</b>\"\n"
+    "        )\n"
+    "        return\n"
+    "    broadcast_text = parts[1].strip()\n"
+    "    user_ids = get_all_user_ids()\n"
+    "    if not user_ids:\n"
+    "        await message.answer(\"No users to broadcast to yet.\")\n"
+    "        return\n"
+    "    status = await message.answer(\n"
+    "        \"Broadcasting to <b>\" + str(len(user_ids)) + \"</b> users...\"\n"
+    "    )\n"
+    "    sent = 0\n"
+    "    failed = 0\n"
+    "    for uid in user_ids:\n"
+    "        try:\n"
+    "            await bot.send_message(uid, broadcast_text)\n"
+    "            sent += 1\n"
+    "        except Exception:\n"
+    "            failed += 1\n"
+    "        await asyncio.sleep(0.05)\n"
+    "    await status.edit_text(\n"
+    "        \"<b>Broadcast complete</b>\\n\\n\"\n"
+    "        \"Sent: <b>\" + str(sent) + \"</b>\\n\"\n"
+    "        \"Failed (blocked/deleted): <b>\" + str(failed) + \"</b>\"\n"
+    "    )\n"
+)
+
 # ── handlers/__init__.py ──────────────────────────────────────────────────────
 files["handlers/__init__.py"] = (
     "from aiogram import Router\n"
@@ -513,36 +620,12 @@ files["handlers/__init__.py"] = (
     "from handlers.language import router as language_router\n"
     "from handlers.downloader_handler import router as downloader_router\n"
     "from handlers.callbacks import router as callbacks_router\n"
+    "from handlers.admin import router as admin_router\n"
     "\n"
     "main_router = Router(name=\"main\")\n"
     "main_router.include_router(commands_router)\n"
     "main_router.include_router(language_router)\n"
+    "main_router.include_router(admin_router)\n"
     "main_router.include_router(callbacks_router)\n"
     "main_router.include_router(downloader_router)\n"
-    "\n"
-    "__all__ = [\"main_router\"]\n"
-)
-
-# ── Write all files ───────────────────────────────────────────────────────────
-for rel_path, content in files.items():
-    dest = ROOT / rel_path
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(content, encoding="utf-8")
-    print("Written:", rel_path)
-
-# ── Verify all files compile ──────────────────────────────────────────────────
-import py_compile, sys
-errors = 0
-for rel_path in files:
-    try:
-        py_compile.compile(str(ROOT / rel_path), doraise=True)
-        print("OK:     ", rel_path)
-    except py_compile.PyCompileError as e:
-        print("FAILED: ", rel_path, "->", e)
-        errors += 1
-
-if errors == 0:
-    print("\nAll files written and verified. Redeploy now.")
-else:
-    print("\n%d file(s) failed verification." % errors)
-    sys.exit(1)
+    "\n")
