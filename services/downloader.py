@@ -65,20 +65,24 @@ def _get_cookies_file() -> str | None:
 
 # ── YouTube player client config ──────────────────────────────────────────────
 #
-# This is the permanent fix for Railway/VPS deployments.
-# yt-dlp tries each client in order until one works:
-#   ios     → iPhone YouTube app  (bypasses bot-detection, no cookies needed)
-#   android → Android YouTube app (same benefit)
-#   web     → normal browser      (fallback, may need cookies on some servers)
-#
-# This never expires unlike cookies and requires zero maintenance.
-
-_YT_PLAYER_CLIENTS = ["ios", "android", "web"]
+# Use multiple clients in order of reliability.
+# mweb and tv_embedded are the most bot-detection resistant on server IPs.
+# ios/android are good fallbacks.
+# web is last resort (most likely to be blocked on VPS/Railway).
 
 _EXTRACTOR_ARGS = {
     "youtube": {
-        "player_client": _YT_PLAYER_CLIENTS,
+        "player_client": ["mweb", "tv_embedded", "ios", "android", "web"],
+        "skip": ["dash", "hls"],   # avoids some "format not available" edge cases
     }
+}
+
+# Spoof a real browser User-Agent so yt-dlp doesn't look like a bot
+_HTTP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+    ),
 }
 
 
@@ -234,8 +238,8 @@ def _extract_info_sync(url: str) -> dict:
         "no_warnings": True,
         "extract_flat": False,
         "skip_download": True,
-        # Use iOS/Android clients — bypasses YouTube bot-detection permanently
         "extractor_args": _EXTRACTOR_ARGS,
+        "http_headers": _HTTP_HEADERS,
     }
     if cookies_file:
         ydl_opts["cookiefile"] = cookies_file
@@ -266,15 +270,19 @@ def _download_sync(
     ydl_opts: dict = {
         "format": format_str,
         "outtmpl": outtmpl,
-        "merge_output_format": "mp4",   # always produce a single mp4 after merge
+        "merge_output_format": "mp4",
         "quiet": True,
         "no_warnings": True,
         "progress_hooks": [progress_hook],
         "postprocessors": postprocessors,
         "nocheckcertificate": False,
         "geo_bypass": True,
-        # Use iOS/Android clients — the permanent cookies-free fix
         "extractor_args": _EXTRACTOR_ARGS,
+        "http_headers": _HTTP_HEADERS,
+        # Retry logic for flaky connections
+        "retries": 5,
+        "fragment_retries": 5,
+        "file_access_retries": 3,
     }
     if cookies_file:
         ydl_opts["cookiefile"] = cookies_file
@@ -441,4 +449,6 @@ def _friendly_error(raw: str) -> str:
         return "❌ Network error. Please try again in a moment."
     if "login" in lower or "sign in" in lower:
         return "❌ This content requires a login. Try a public video instead."
+    if "format" in lower and "not available" in lower:
+        return "❌ No downloadable format found for this video. Try a different quality."
     return f"❌ Download failed: {raw[:200]}"
