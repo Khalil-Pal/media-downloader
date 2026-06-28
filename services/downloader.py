@@ -79,22 +79,11 @@ def _build_opts(url: str, extra: dict | None = None) -> dict:
 
     # Instagram-specific options
     elif "instagram.com" in url:
-        # Instagram serves pre-merged streams; prefer a single-file format to
-        # avoid unnecessary merging failures.
-        if extra and "format" not in extra:
-            extra = {"format": "best[ext=mp4]/best", **extra}
-        elif extra is None:
-            extra = {"format": "best[ext=mp4]/best"}
+        # Use Instagram's mobile v1 API — less restricted than the web GraphQL API
+        opts["extractor_args"] = {"instagram": {"api": ["v1"]}}
         cookies = _get_cookies_file("INSTAGRAM_COOKIES")
         if cookies:
             opts["cookiefile"] = cookies
-        # Instagram-friendly headers
-        opts["http_headers"] = {
-            "User-Agent": (
-                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-                "AppleWebKit/605.1.15 (KHTML, like Gecko) Instagram/303.0.0.11.108 Mobile/15E148"
-            ),
-        }
 
     if extra:
         opts.update(extra)
