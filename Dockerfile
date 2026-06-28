@@ -13,10 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-
-# Unset any broken proxy env vars before pip runs
-RUN unset https_proxy http_proxy HTTPS_PROXY HTTP_PROXY no_proxy NO_PROXY || true && \
-    pip install --no-cache-dir --prefix=/install -r requirements.txt
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 
 # Stage 2: runtime
@@ -51,10 +48,6 @@ RUN python setup_multilang.py
 # Default environment (override via .env or docker-compose)
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    DOWNLOAD_PATH=/app/temp_downloads \
-    https_proxy="" \
-    http_proxy="" \
-    HTTPS_PROXY="" \
-    HTTP_PROXY=""
+    DOWNLOAD_PATH=/app/temp_downloads
 
 CMD ["python", "main.py"]
