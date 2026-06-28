@@ -21,52 +21,23 @@ from utils.formatters import format_duration, format_size, progress_bar
 logger = logging.getLogger(__name__)
 
 
-# ── Auth / proxy helpers ──────────────────────────────────────────────────────
+# ── Cookie helpers ────────────────────────────────────────────────────────────
 
-def _get_cookies_file() -> str | None:
-    cookies_content = os.getenv("YOUTUBE_COOKIES", "").strip()
-    if cookies_content:
-        cookies_content = cookies_content.replace("\\n", "\n")
+def _get_cookies_file(env_var: str) -> str | None:
+    """Load cookies from an env var or fall back to a file on disk."""
+    content = os.getenv(env_var, "").strip()
+    if content:
+        content = content.replace("\\n", "\n")
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
-        tmp.write(cookies_content)
+        tmp.write(content)
         tmp.close()
-        logger.info("Loaded YOUTUBE_COOKIES (%d lines)", cookies_content.count("\n"))
+        logger.info("Loaded %s (%d lines)", env_var, content.count("\n"))
         return tmp.name
-    if os.path.exists("cookies.txt"):
-        return "cookies.txt"
     return None
 
 
-def _get_proxy() -> str | None:
-    """
-    Return proxy URL for YouTube only.
-    Accepts:
-      - http://user:pass@ip:port
-      - ip:port:user:pass  (auto-converted)
-    """
-    proxy = os.getenv("YOUTUBE_PROXY", "").strip().strip("\n").strip("\r")
-    if not proxy:
-        return None
-    if proxy.startswith("http://") or proxy.startswith("https://"):
-        return proxy
-    parts = proxy.split(":")
-    if len(parts) == 4:
-        ip, port, user, password = parts
-        return f"http://{user}:{password}@{ip}:{port}"
-    logger.warning("YOUTUBE_PROXY format not recognized: %r", proxy)
-    return None
+# ── yt-dlp base options ───────────────────────────────────────────────────────
 
-
-# ── yt-dlp configs ────────────────────────────────────────────────────────────
-
-# YouTube-specific extractor args
-_YT_EXTRACTOR_ARGS = {
-    "youtube": {
-        "player_client": ["tv_embedded", "mweb", "ios", "android", "web"],
-    }
-}
-
-# Base opts for ALL platforms
 _BASE_OPTS: dict = {
     "quiet": True,
     "no_warnings": True,
@@ -77,35 +48,32 @@ _BASE_OPTS: dict = {
     "fragment_retries": 5,
 }
 
-
-def _youtube_opts(extra: dict | None = None) -> dict:
-    """Build yt-dlp options for YouTube with proxy + cookies + extractor args."""
-    opts = {
-        **_BASE_OPTS,
-        "extractor_args": _YT_EXTRACTOR_ARGS,
+_YT_EXTRACTOR_ARGS = {
+    "youtube": {
+        "player_client": ["tv_embedded", "mweb", "ios", "android", "web"],
     }
-    proxy = _get_proxy()
-    if proxy:
-        opts["proxy"] = proxy
-        logger.info("YouTube proxy active: ...@%s", proxy.split("@")[-1])
-    cookies_file = _get_cookies_file()
-    if cookies_file:
-        opts["cookiefile"] = cookies_file
-    if extra:
-        opts.update(extra)
-    return opts
+}
 
 
-def _generic_opts(extra: dict | None = None) -> dict:
-    """Build yt-dlp options for non-YouTube platforms (Instagram, TikTok, etc.)."""
+def _build_opts(url: str, extra: dict | None = None) -> dict:
     opts = {**_BASE_OPTS}
+
+    # YouTube-specific options
+    if any(x in url for x in ("youtube.com", "youtu.be")):
+        opts["extractor_args"] = _YT_EXTRACTOR_ARGS
+        cookies = _get_cookies_file("YOUTUBE_COOKIES")
+        if cookies:
+            opts["cookiefile"] = cookies
+
+    # Instagram-specific options
+    elif "instagram.com" in url:
+        cookies = _get_cookies_file("INSTAGRAM_COOKIES")
+        if cookies:
+            opts["cookiefile"] = cookies
+
     if extra:
         opts.update(extra)
     return opts
-
-
-def _is_youtube(url: str) -> bool:
-    return any(x in url for x in ("youtube.com", "youtu.be", "youtube-nocookie.com"))
 
 
 # ── Concurrency + cancellation ────────────────────────────────────────────────
@@ -240,19 +208,6 @@ async def _safe_callback(callback: ProgressCallback, msg: str) -> None:
         pass
 
 
-def _build_opts(url: str, extra: dict | None = None) -> dict:
-    """Build yt-dlp options — YouTube gets extractor args, all URLs get proxy."""
-    if _is_youtube(url):
-        opts = _youtube_opts(extra)
-    else:
-        opts = _generic_opts(extra)
-        # Apply proxy to all platforms since Railway IPs are blocked everywhere
-        proxy = _get_proxy()
-        if proxy:
-            opts["proxy"] = proxy
-    return opts
-
-
 def _extract_info_sync(url: str) -> dict:
     opts = _build_opts(url, {"skip_download": True, "extract_flat": False})
     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -276,15 +231,13 @@ def _download_sync(
             "preferredquality": "192",
         })
 
-    extra = {
+    opts = _build_opts(url, {
         "format": format_str,
         "outtmpl": outtmpl,
         "merge_output_format": "mp4",
         "progress_hooks": [progress_hook],
         "postprocessors": postprocessors,
-    }
-
-    opts = _build_opts(url, extra)
+    })
 
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -418,8 +371,10 @@ def cleanup_session(file_path: Path | None) -> None:
 
 def _friendly_error(raw: str) -> str:
     lower = raw.lower()
-    if "sign in" in lower or "bot" in lower or "confirm" in lower or "429" in lower:
-        return "❌ YouTube is blocking this download. Please try again in a few minutes."
+    if "sign in" in lower or "429" in lower or "confirm" in lower:
+        return "❌ This platform is blocking downloads from this server. Try again later."
+    if "empty" in lower and "instagram" in lower:
+        return "❌ Instagram requires login to download this content. Contact the bot admin."
     if "drm" in lower:
         return "❌ This video is DRM protected and cannot be downloaded."
     if "private" in lower:
@@ -432,7 +387,7 @@ def _friendly_error(raw: str) -> str:
         return "❌ This content has been removed."
     if "unsupported url" in lower:
         return "❌ This URL is not supported."
-    if "too large" in lower or "max filesize" in lower:
+    if "too large" in lower:
         return f"❌ File exceeds the {settings.max_file_size_mb} MB limit."
     if "network" in lower or "connection" in lower:
         return "❌ Network error. Please try again."
