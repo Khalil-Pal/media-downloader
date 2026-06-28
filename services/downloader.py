@@ -50,14 +50,11 @@ def _get_cookies_file() -> str | None:
     """
     cookies_content = os.getenv("YOUTUBE_COOKIES")
     if cookies_content:
-        # Railway may store literal \n instead of real newlines — fix that
-        cookies_content = cookies_content.replace("\\n", "\n")
         tmp = tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", delete=False, encoding="utf-8"
         )
         tmp.write(cookies_content)
         tmp.close()
-        logger.info("Loaded YOUTUBE_COOKIES (%d bytes, %d lines)", len(cookies_content), cookies_content.count("\n"))
         return tmp.name
 
     if os.path.exists("cookies.txt"):
@@ -86,6 +83,15 @@ _HTTP_HEADERS = {
         "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
     ),
 }
+
+
+def _get_proxy() -> str | None:
+    """Return proxy URL from YOUTUBE_PROXY env var if set."""
+    proxy = os.getenv("YOUTUBE_PROXY", "").strip()
+    if proxy:
+        logger.info("Using proxy for YouTube: %s", proxy.split("@")[-1])
+        return proxy
+    return None
 
 
 # ── Concurrency + cancellation ────────────────────────────────────────────────
@@ -235,6 +241,7 @@ async def _safe_callback(callback: ProgressCallback, msg: str) -> None:
 def _extract_info_sync(url: str) -> dict:
     """Blocking metadata fetch — no download."""
     cookies_file = _get_cookies_file()
+    proxy = _get_proxy()
     ydl_opts: dict = {
         "quiet": True,
         "no_warnings": True,
@@ -245,6 +252,8 @@ def _extract_info_sync(url: str) -> dict:
     }
     if cookies_file:
         ydl_opts["cookiefile"] = cookies_file
+    if proxy:
+        ydl_opts["proxy"] = proxy
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)
@@ -269,6 +278,7 @@ def _download_sync(
             "preferredquality": "192",
         })
 
+    proxy = _get_proxy()
     ydl_opts: dict = {
         "format": format_str,
         "outtmpl": outtmpl,
@@ -277,17 +287,18 @@ def _download_sync(
         "no_warnings": True,
         "progress_hooks": [progress_hook],
         "postprocessors": postprocessors,
-        "nocheckcertificate": False,
+        "nocheckcertificate": True,
         "geo_bypass": True,
         "extractor_args": _EXTRACTOR_ARGS,
         "http_headers": _HTTP_HEADERS,
-        # Retry logic for flaky connections
         "retries": 5,
         "fragment_retries": 5,
         "file_access_retries": 3,
     }
     if cookies_file:
         ydl_opts["cookiefile"] = cookies_file
+    if proxy:
+        ydl_opts["proxy"] = proxy
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
