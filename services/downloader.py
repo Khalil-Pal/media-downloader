@@ -273,7 +273,35 @@ def _download_sync(
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+
+def _is_instagram_url(url: str) -> bool:
+    return "instagram.com" in url
+
+
 async def fetch_info(url: str) -> MediaInfo:
+    loop = asyncio.get_running_loop()
+    try:
+        info = await loop.run_in_executor(None, _extract_info_sync, url)
+    except yt_dlp.utils.DownloadError as exc:
+        raw = str(exc)
+        # Instagram: fall back to instaloader when yt-dlp gets blocked
+        if _is_instagram_url(url) and "empty media response" in raw.lower():
+            logger.info("yt-dlp blocked by Instagram; trying instaloader for info")
+            from services.instagram_downloader import fetch_instagram_info
+            ig = await loop.run_in_executor(None, fetch_instagram_info, url)
+            if ig:
+                return MediaInfo(
+                    title=ig["title"],
+                    uploader=ig["uploader"],
+                    duration=format_duration(ig["duration"] or None),
+                    platform="Instagram",
+                    file_size_str="—",
+                    thumbnail_url=None,
+                    formats=[],
+                )
+            raise ValueError("❌ Instagram blocked this request. Try again later or contact the bot admin.") from exc
+        raise ValueError(raw) from exc
+    
     loop = asyncio.get_running_loop()
     try:
         info = await loop.run_in_executor(None, _extract_info_sync, url)
@@ -349,7 +377,33 @@ async def download_media(
     except yt_dlp.utils.DownloadError as exc:
         msg = str(exc)
         if "cancelled" in msg.lower():
-            return DownloadResult(success=False, error="❌ Download cancelled.")
+             return DownloadResult(success=False, error="❌ Download cancelled.")
+        # Instagram fallback: try instaloader when yt-dlp is blocked
+        if _is_instagram_url(url) and "empty media response" in msg.lower():
+            logger.info("yt-dlp blocked by Instagram; trying instaloader download")
+            try:
+                from services.instagram_downloader import download_instagram, fetch_instagram_info
+                file_path = await loop.run_in_executor(None, download_instagram, url, session_dir)
+                if file_path and file_path.exists():
+                    actual_size = file_path.stat().st_size
+                    if actual_size > settings.max_file_size_bytes:
+                        file_path.unlink(missing_ok=True)
+                        return DownloadResult(
+                            success=False,
+                            error=f"❌ File is too large ({format_size(actual_size)}). Max: {settings.max_file_size_mb} MB.",
+                        )
+                    ig_meta = await loop.run_in_executor(None, fetch_instagram_info, url)
+                    media_info = MediaInfo(
+                        title=(ig_meta or {}).get("title", "Instagram video"),
+                        uploader=(ig_meta or {}).get("uploader", "Unknown"),
+                        duration=format_duration((ig_meta or {}).get("duration") or None),
+                        platform="Instagram",
+                        file_size_str=format_size(actual_size),
+                    )
+                    return DownloadResult(success=True, file_path=file_path, info=media_info)
+            except Exception as ig_exc:
+                logger.warning("instaloader fallback failed: %s", ig_exc)
+            return DownloadResult(success=False, error="❌ Instagram is currently blocking downloads from this server. Try again later.")
         logger.warning("yt-dlp error for %s: %s", url, msg)
         return DownloadResult(success=False, error=_friendly_error(msg))
 
