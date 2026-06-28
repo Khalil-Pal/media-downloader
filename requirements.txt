@@ -5,3 +5,4 @@ aiofiles>=23.0.0
 aiohttp>=3.9.0
 telethon>=1.36.0
 psycopg2-binary>=2.9.0
+instaloader>=4.10
