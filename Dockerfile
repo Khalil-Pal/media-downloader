@@ -29,6 +29,7 @@ LABEL description="Sandy Squirrel – Telegram media downloader bot"
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     ca-certificates \
+    nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user for security
