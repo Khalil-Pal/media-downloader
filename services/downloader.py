@@ -86,11 +86,29 @@ _HTTP_HEADERS = {
 
 
 def _get_proxy() -> str | None:
-    """Return proxy URL from YOUTUBE_PROXY env var if set."""
-    proxy = os.getenv("YOUTUBE_PROXY", "").strip()
-    if proxy:
-        logger.info("Using proxy for YouTube: %s", proxy.split("@")[-1])
+    """
+    Return a properly formatted proxy URL from YOUTUBE_PROXY env var.
+    Accepts two formats:
+      - http://user:pass@ip:port  (preferred)
+      - ip:port:user:pass         (auto-converted)
+    """
+    proxy = os.getenv("YOUTUBE_PROXY", "").strip().rstrip("\n").rstrip("\r")
+    if not proxy:
+        return None
+
+    # Auto-convert ip:port:user:pass → http://user:pass@ip:port
+    if proxy.startswith("http://") or proxy.startswith("https://"):
+        logger.info("Using proxy: %s", proxy.split("@")[-1])
         return proxy
+
+    parts = proxy.split(":")
+    if len(parts) == 4:
+        ip, port, user, password = parts
+        formatted = f"http://{user}:{password}@{ip}:{port}"
+        logger.info("Using proxy (auto-formatted): %s:%s", ip, port)
+        return formatted
+
+    logger.warning("YOUTUBE_PROXY format not recognized: %r", proxy)
     return None
 
 
