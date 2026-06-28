@@ -20,19 +20,24 @@ from utils.formatters import format_duration, format_size, progress_bar
 
 logger = logging.getLogger(__name__)
 
+# Path to the bundled cookies.txt in the project root
+_LOCAL_COOKIES_FILE = Path(__file__).parent.parent / "cookies.txt"
 
 # ── Cookie helpers ────────────────────────────────────────────────────────────
 
-def _get_cookies_file(env_var: str) -> str | None:
-    """Load cookies from an env var or fall back to a file on disk."""
+def _get_cookies_file(env_var: str, fallback_file: Path | None = None) -> str | None:
+    """Load cookies from an env var, or fall back to a file on disk."""
     content = os.getenv(env_var, "").strip()
     if content:
         content = content.replace("\\n", "\n")
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
         tmp.write(content)
         tmp.close()
-        logger.info("Loaded %s (%d lines)", env_var, content.count("\n"))
+        logger.info("Loaded %s from env (%d lines)", env_var, content.count("\n"))
         return tmp.name
+    if fallback_file and fallback_file.exists():
+        logger.info("Using fallback cookies file: %s", fallback_file)
+        return str(fallback_file)
     return None
 
 
@@ -46,11 +51,17 @@ _BASE_OPTS: dict = {
     "socket_timeout": 30,
     "retries": 5,
     "fragment_retries": 5,
+    "http_headers": {
+        "User-Agent": (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        ),
+    },
 }
 
 _YT_EXTRACTOR_ARGS = {
     "youtube": {
-        "player_client": ["tv_embedded", "mweb", "ios", "android", "web"],
+        "player_client": ["ios", "android", "tv_embedded", "web"],
     }
 }
 
@@ -61,15 +72,29 @@ def _build_opts(url: str, extra: dict | None = None) -> dict:
     # YouTube-specific options
     if any(x in url for x in ("youtube.com", "youtu.be")):
         opts["extractor_args"] = _YT_EXTRACTOR_ARGS
-        cookies = _get_cookies_file("YOUTUBE_COOKIES")
+         # Use YOUTUBE_COOKIES env var, falling back to the bundled cookies.txt
+        cookies = _get_cookies_file("YOUTUBE_COOKIES", fallback_file=_LOCAL_COOKIES_FILE)
         if cookies:
             opts["cookiefile"] = cookies
 
     # Instagram-specific options
     elif "instagram.com" in url:
+        # Instagram serves pre-merged streams; prefer a single-file format to
+        # avoid unnecessary merging failures.
+        if extra and "format" not in extra:
+            extra = {"format": "best[ext=mp4]/best", **extra}
+        elif extra is None:
+            extra = {"format": "best[ext=mp4]/best"}
         cookies = _get_cookies_file("INSTAGRAM_COOKIES")
         if cookies:
             opts["cookiefile"] = cookies
+        # Instagram-friendly headers
+        opts["http_headers"] = {
+            "User-Agent": (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Instagram/303.0.0.11.108 Mobile/15E148"
+            ),
+        }
 
     if extra:
         opts.update(extra)
