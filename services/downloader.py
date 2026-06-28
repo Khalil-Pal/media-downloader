@@ -240,12 +240,21 @@ async def _safe_callback(callback: ProgressCallback, msg: str) -> None:
         pass
 
 
-def _extract_info_sync(url: str) -> dict:
+def _build_opts(url: str, extra: dict | None = None) -> dict:
+    """Build yt-dlp options — YouTube gets extractor args, all URLs get proxy."""
     if _is_youtube(url):
-        opts = _youtube_opts({"skip_download": True, "extract_flat": False})
+        opts = _youtube_opts(extra)
     else:
-        opts = _generic_opts({"skip_download": True, "extract_flat": False})
+        opts = _generic_opts(extra)
+        # Apply proxy to all platforms since Railway IPs are blocked everywhere
+        proxy = _get_proxy()
+        if proxy:
+            opts["proxy"] = proxy
+    return opts
 
+
+def _extract_info_sync(url: str) -> dict:
+    opts = _build_opts(url, {"skip_download": True, "extract_flat": False})
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False)
 
@@ -275,10 +284,7 @@ def _download_sync(
         "postprocessors": postprocessors,
     }
 
-    if _is_youtube(url):
-        opts = _youtube_opts(extra)
-    else:
-        opts = _generic_opts(extra)
+    opts = _build_opts(url, extra)
 
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
