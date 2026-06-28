@@ -50,11 +50,14 @@ def _get_cookies_file() -> str | None:
     """
     cookies_content = os.getenv("YOUTUBE_COOKIES")
     if cookies_content:
+        # Railway may store literal \n instead of real newlines — fix that
+        cookies_content = cookies_content.replace("\\n", "\n")
         tmp = tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", delete=False, encoding="utf-8"
         )
         tmp.write(cookies_content)
         tmp.close()
+        logger.info("Loaded YOUTUBE_COOKIES (%d bytes, %d lines)", len(cookies_content), cookies_content.count("\n"))
         return tmp.name
 
     if os.path.exists("cookies.txt"):
@@ -73,7 +76,6 @@ def _get_cookies_file() -> str | None:
 _EXTRACTOR_ARGS = {
     "youtube": {
         "player_client": ["mweb", "tv_embedded", "ios", "android", "web"],
-        "skip": ["dash", "hls"],   # avoids some "format not available" edge cases
     }
 }
 
