@@ -1,23 +1,5 @@
 """
 services/downloader.py – Media download logic using yt-dlp.
-
-This module is the ONLY place that touches yt-dlp.
-Handlers must never call yt-dlp directly.
-
-FIX NOTES
-─────────
-1. YouTube "format not available" error
-   The old format strings were too specific and crashed when a video didn't
-   have that exact format. The new strings always end with a plain /best
-   catch-all so yt-dlp ALWAYS finds something to download.
-
-2. Cookies expiring on Railway
-   Root cause: YouTube's bot-detection blocks server IPs. Old fix: cookies.
-   New permanent fix: tell yt-dlp to use the iOS and Android player clients.
-   These are the same clients the real Telegram/WhatsApp apps use — YouTube
-   never blocks them, they never expire, and they work for all public videos
-   without any cookies or credentials.
-   For age-restricted content cookies are still used as a fallback if present.
 """
 from __future__ import annotations
 
@@ -39,51 +21,59 @@ from utils.formatters import format_duration, format_size, progress_bar
 logger = logging.getLogger(__name__)
 
 
-# ── Cookie helpers (fallback only — not needed for public videos) ─────────────
+# ── Cookie helpers ────────────────────────────────────────────────────────────
 
-def _get_cookies_file() -> str | None:
-    """
-    Return a cookies file path only if one is configured.
-    Cookies are now optional — the iOS/Android player clients handle public
-    videos without them. Cookies are only used as a fallback for age-restricted
-    or login-walled content.
-    """
-    cookies_content = os.getenv("YOUTUBE_COOKIES")
-    if cookies_content:
-        tmp = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, encoding="utf-8"
-        )
-        tmp.write(cookies_content)
+def _get_cookies_file(env_var: str) -> str | None:
+    """Load cookies from an env var or fall back to a file on disk."""
+    content = os.getenv(env_var, "").strip()
+    if content:
+        content = content.replace("\\n", "\n")
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+        tmp.write(content)
         tmp.close()
+        logger.info("Loaded %s (%d lines)", env_var, content.count("\n"))
         return tmp.name
-
-    if os.path.exists("cookies.txt"):
-        return "cookies.txt"
-
-    return None  # Fine — iOS/Android clients work without cookies
+    return None
 
 
-# ── YouTube player client config ──────────────────────────────────────────────
-#
-# Use multiple clients in order of reliability.
-# mweb and tv_embedded are the most bot-detection resistant on server IPs.
-# ios/android are good fallbacks.
-# web is last resort (most likely to be blocked on VPS/Railway).
+# ── yt-dlp base options ───────────────────────────────────────────────────────
 
-_EXTRACTOR_ARGS = {
+_BASE_OPTS: dict = {
+    "quiet": True,
+    "no_warnings": True,
+    "geo_bypass": True,
+    "nocheckcertificate": True,
+    "socket_timeout": 30,
+    "retries": 5,
+    "fragment_retries": 5,
+}
+
+_YT_EXTRACTOR_ARGS = {
     "youtube": {
-        "player_client": ["mweb", "tv_embedded", "ios", "android", "web"],
-        "skip": ["dash", "hls"],   # avoids some "format not available" edge cases
+        "player_client": ["tv_embedded", "mweb", "ios", "android", "web"],
     }
 }
 
-# Spoof a real browser User-Agent so yt-dlp doesn't look like a bot
-_HTTP_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-    ),
-}
+
+def _build_opts(url: str, extra: dict | None = None) -> dict:
+    opts = {**_BASE_OPTS}
+
+    # YouTube-specific options
+    if any(x in url for x in ("youtube.com", "youtu.be")):
+        opts["extractor_args"] = _YT_EXTRACTOR_ARGS
+        cookies = _get_cookies_file("YOUTUBE_COOKIES")
+        if cookies:
+            opts["cookiefile"] = cookies
+
+    # Instagram-specific options
+    elif "instagram.com" in url:
+        cookies = _get_cookies_file("INSTAGRAM_COOKIES")
+        if cookies:
+            opts["cookiefile"] = cookies
+
+    if extra:
+        opts.update(extra)
+    return opts
 
 
 # ── Concurrency + cancellation ────────────────────────────────────────────────
@@ -93,16 +83,6 @@ _cancel_flags: dict[int, asyncio.Event] = {}
 
 
 # ── Quality format selectors ──────────────────────────────────────────────────
-#
-# Every selector ends with /best as an unconditional catch-all.
-# This means yt-dlp will NEVER raise "Requested format not available" —
-# if the preferred quality doesn't exist it silently falls back to best.
-#
-# Reading order (yt-dlp tries left → right, picks first match):
-#   1. mp4 video + m4a audio merged  (best compatibility, needs FFmpeg)
-#   2. any video + any audio merged  (needs FFmpeg)
-#   3. pre-merged single file        (no FFmpeg needed, slightly lower quality)
-#   4. absolute best available       (unconditional safety net)
 
 QUALITY_FORMATS: dict[str, str] = {
     "best": (
@@ -213,9 +193,7 @@ def _build_progress_hook(
                 f"📦 {size_info}\n"
                 f"⚡ {speed_str}  ⏱ ETA {eta_str}"
             )
-            asyncio.run_coroutine_threadsafe(
-                _safe_callback(callback, msg), loop
-            )
+            asyncio.run_coroutine_threadsafe(_safe_callback(callback, msg), loop)
 
     return hook
 
@@ -231,20 +209,8 @@ async def _safe_callback(callback: ProgressCallback, msg: str) -> None:
 
 
 def _extract_info_sync(url: str) -> dict:
-    """Blocking metadata fetch — no download."""
-    cookies_file = _get_cookies_file()
-    ydl_opts: dict = {
-        "quiet": True,
-        "no_warnings": True,
-        "extract_flat": False,
-        "skip_download": True,
-        "extractor_args": _EXTRACTOR_ARGS,
-        "http_headers": _HTTP_HEADERS,
-    }
-    if cookies_file:
-        ydl_opts["cookiefile"] = cookies_file
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    opts = _build_opts(url, {"skip_download": True, "extract_flat": False})
+    with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False)
 
 
@@ -255,8 +221,6 @@ def _download_sync(
     audio_only: bool,
     progress_hook: Callable[[dict], None],
 ) -> tuple[Path, dict]:
-    """Blocking download — run inside a thread executor."""
-    cookies_file = _get_cookies_file()
     outtmpl = str(output_path / "%(title).80s.%(ext)s")
 
     postprocessors = []
@@ -267,30 +231,17 @@ def _download_sync(
             "preferredquality": "192",
         })
 
-    ydl_opts: dict = {
+    opts = _build_opts(url, {
         "format": format_str,
         "outtmpl": outtmpl,
         "merge_output_format": "mp4",
-        "quiet": True,
-        "no_warnings": True,
         "progress_hooks": [progress_hook],
         "postprocessors": postprocessors,
-        "nocheckcertificate": False,
-        "geo_bypass": True,
-        "extractor_args": _EXTRACTOR_ARGS,
-        "http_headers": _HTTP_HEADERS,
-        # Retry logic for flaky connections
-        "retries": 5,
-        "fragment_retries": 5,
-        "file_access_retries": 3,
-    }
-    if cookies_file:
-        ydl_opts["cookiefile"] = cookies_file
+    })
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
 
-    # Find the output file — pick the largest in case of multiple fragments
     found: Path | None = None
     largest = -1
     for f in output_path.iterdir():
@@ -359,25 +310,15 @@ async def download_media(
                 return DownloadResult(success=False, error="Download was cancelled.")
 
             file_path, info = await loop.run_in_executor(
-                None,
-                _download_sync,
-                url,
-                session_dir,
-                format_str,
-                audio_only,
-                hook,
+                None, _download_sync, url, session_dir, format_str, audio_only, hook,
             )
 
-        # Real size guard (stat the actual file — yt-dlp estimates can be wrong)
         actual_size = file_path.stat().st_size
         if actual_size > settings.max_file_size_bytes:
             file_path.unlink(missing_ok=True)
             return DownloadResult(
                 success=False,
-                error=(
-                    f"❌ File is too large ({format_size(actual_size)}). "
-                    f"Max allowed: {settings.max_file_size_mb} MB."
-                ),
+                error=f"❌ File is too large ({format_size(actual_size)}). Max: {settings.max_file_size_mb} MB.",
             )
 
         media_info = MediaInfo(
@@ -398,11 +339,8 @@ async def download_media(
         logger.warning("yt-dlp error for %s: %s", url, msg)
         return DownloadResult(success=False, error=_friendly_error(msg))
 
-    except FileNotFoundError as exc:
-        logger.error("File not found after download: %s", exc)
-        return DownloadResult(
-            success=False, error="❌ Download finished but file was not saved."
-        )
+    except FileNotFoundError:
+        return DownloadResult(success=False, error="❌ Download finished but file was not saved.")
 
     except Exception as exc:
         logger.exception("Unexpected download error for %s", url)
@@ -433,22 +371,28 @@ def cleanup_session(file_path: Path | None) -> None:
 
 def _friendly_error(raw: str) -> str:
     lower = raw.lower()
+    if "sign in" in lower or "429" in lower or "confirm" in lower:
+        return "❌ This platform is blocking downloads from this server. Try again later."
+    if "empty" in lower and "instagram" in lower:
+        return "❌ Instagram requires login to download this content. Contact the bot admin."
+    if "drm" in lower:
+        return "❌ This video is DRM protected and cannot be downloaded."
     if "private" in lower:
         return "❌ This content is private or requires login."
     if "geo" in lower or "not available in your country" in lower:
-        return "❌ This content is geo-blocked and unavailable in your region."
+        return "❌ This content is geo-blocked."
     if "age" in lower:
         return "❌ Age-restricted content cannot be downloaded."
     if "removed" in lower or "no longer available" in lower:
-        return "❌ This content has been removed or is no longer available."
+        return "❌ This content has been removed."
     if "unsupported url" in lower:
-        return "❌ This URL is not supported. Try YouTube, Instagram, or Facebook."
-    if "too large" in lower or "max filesize" in lower:
+        return "❌ This URL is not supported."
+    if "too large" in lower:
         return f"❌ File exceeds the {settings.max_file_size_mb} MB limit."
     if "network" in lower or "connection" in lower:
-        return "❌ Network error. Please try again in a moment."
-    if "login" in lower or "sign in" in lower:
-        return "❌ This content requires a login. Try a public video instead."
+        return "❌ Network error. Please try again."
+    if "login" in lower:
+        return "❌ This content requires login."
     if "format" in lower and "not available" in lower:
-        return "❌ No downloadable format found for this video. Try a different quality."
+        return "❌ No downloadable format found. Try a different quality."
     return f"❌ Download failed: {raw[:200]}"
