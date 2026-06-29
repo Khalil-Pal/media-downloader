@@ -70,12 +70,25 @@ def _get_cookies_file() -> str | None:
 # ios/android are good fallbacks.
 # web is last resort (most likely to be blocked on VPS/Railway).
 
-_EXTRACTOR_ARGS = {
+# YouTube-specific args — ios/android clients bypass bot detection on server IPs.
+# WARNING: Do NOT apply "skip hls/dash" globally — Instagram uses HLS exclusively
+# and returns an empty response if HLS is skipped. This was the Instagram bug.
+_EXTRACTOR_ARGS_YOUTUBE = {
     "youtube": {
         "player_client": ["mweb", "tv_embedded", "ios", "android", "web"],
-        "skip": ["dash", "hls"],   # avoids some "format not available" edge cases
+        "skip": ["dash", "hls"],
     }
 }
+
+# Generic args for Instagram, TikTok, Twitter, etc. — no skip rules.
+_EXTRACTOR_ARGS_GENERIC: dict = {}
+
+
+def _get_extractor_args(url: str) -> dict:
+    """Return the right extractor args based on the URL."""
+    if "youtube.com" in url or "youtu.be" in url:
+        return _EXTRACTOR_ARGS_YOUTUBE
+    return _EXTRACTOR_ARGS_GENERIC
 
 # Spoof a real browser User-Agent so yt-dlp doesn't look like a bot
 _HTTP_HEADERS = {
@@ -238,7 +251,7 @@ def _extract_info_sync(url: str) -> dict:
         "no_warnings": True,
         "extract_flat": False,
         "skip_download": True,
-        "extractor_args": _EXTRACTOR_ARGS,
+        "extractor_args": _get_extractor_args(url),
         "http_headers": _HTTP_HEADERS,
     }
     if cookies_file:
@@ -277,7 +290,7 @@ def _download_sync(
         "postprocessors": postprocessors,
         "nocheckcertificate": False,
         "geo_bypass": True,
-        "extractor_args": _EXTRACTOR_ARGS,
+        "extractor_args": _get_extractor_args(url),
         "http_headers": _HTTP_HEADERS,
         # Retry logic for flaky connections
         "retries": 5,
