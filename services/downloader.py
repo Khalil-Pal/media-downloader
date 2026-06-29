@@ -253,6 +253,7 @@ def _extract_info_sync(url: str) -> dict:
         "skip_download": True,
         "extractor_args": _get_extractor_args(url),
         "http_headers": _HTTP_HEADERS,
+        "nocheckcertificate": True,
     }
     if cookies_file:
         ydl_opts["cookiefile"] = cookies_file
