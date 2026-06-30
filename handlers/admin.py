@@ -22,7 +22,7 @@ def _is_admin(user_id: int) -> bool:
 async def cmd_users(message: Message) -> None:
     if not _is_admin(message.from_user.id):
         return
-    total = user_count()
+    total = await user_count()
     await message.answer(
         "<b>User Statistics</b>\n\n"
         "Total registered users: <b>" + str(total) + "</b>"
@@ -36,15 +36,16 @@ async def cmd_broadcast(message: Message, bot: Bot) -> None:
     text = message.text or ""
     parts = text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
+        total = await user_count()
         await message.answer(
             "<b>Broadcast Usage</b>\n\n"
             "<code>/broadcast Your message here</code>\n\n"
             "Sends to all registered users.\n"
-            "Current users: <b>" + str(user_count()) + "</b>"
+            "Current users: <b>" + str(total) + "</b>"
         )
         return
     broadcast_text = parts[1].strip()
-    user_ids = get_all_user_ids()
+    user_ids = await get_all_user_ids()
     if not user_ids:
         await message.answer("No users to broadcast to yet.")
         return
