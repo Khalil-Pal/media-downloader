@@ -17,7 +17,7 @@ async def cb_quality(callback: CallbackQuery, bot: Bot) -> None:
     await callback.answer()
 
     user_id = callback.from_user.id
-    lang = get_user_lang_or_default(user_id)
+    lang = await get_user_lang_or_default(user_id)
 
     parts = (callback.data or "").split(":", 2)
     if len(parts) < 3:
@@ -56,7 +56,7 @@ async def cb_quality(callback: CallbackQuery, bot: Bot) -> None:
 @router.callback_query(F.data.startswith("cancel:"))
 async def cb_cancel(callback: CallbackQuery) -> None:
     user_id = callback.from_user.id
-    lang = get_user_lang_or_default(user_id)
+    lang = await get_user_lang_or_default(user_id)
 
     await callback.answer(t(lang, "cancelling"))
 

@@ -25,7 +25,7 @@ SMALL_FILE_LIMIT = 50 * 1024 * 1024
 
 async def _run_download(message, bot, url, quality="best", audio_only=False):
     user_id = message.from_user.id  # type: ignore[union-attr]
-    lang = get_user_lang_or_default(user_id)
+    lang = await get_user_lang_or_default(user_id)
 
     # Rate limit check
     allowed, reason = await rate_limiter.check(user_id)
@@ -144,7 +144,7 @@ async def _run_download(message, bot, url, quality="best", audio_only=False):
 @router.message(Command("download"))
 async def cmd_download(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
-    lang = get_user_lang_or_default(user_id)
+    lang = await get_user_lang_or_default(user_id)
     text = message.text or ""
     parts = text.split(maxsplit=1)
 
@@ -167,7 +167,7 @@ async def cmd_download(message: Message, bot: Bot) -> None:
 @router.message(Command("audio"))
 async def cmd_audio(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
-    lang = get_user_lang_or_default(user_id)
+    lang = await get_user_lang_or_default(user_id)
     text = message.text or ""
     parts = text.split(maxsplit=1)
 
@@ -185,8 +185,8 @@ async def cmd_audio(message: Message, bot: Bot) -> None:
 
 @router.message(F.text & F.text.regexp(r"https?://\S+"))
 async def handle_url_message(message: Message, bot: Bot) -> None:
-    register_user(message.from_user.id)
-    lang = get_user_lang_or_default(message.from_user.id)
+    await register_user(message.from_user.id)
+    lang = await get_user_lang_or_default(message.from_user.id)
     url = extract_url_from_text(message.text or "")
 
     if not url or not is_valid_url(url):

@@ -21,33 +21,31 @@ router = Router(name="commands")
 @router.message(Command("start"))
 async def cmd_start(message: Message) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
-    register_user(user_id)
-    if not has_chosen_language(user_id):
+    await register_user(user_id)
+    if not await has_chosen_language(user_id):
         await message.answer(t(None, "choose_language"), reply_markup=language_keyboard())
         return
 
-    lang = get_user_lang_or_default(user_id)
+    lang = await get_user_lang_or_default(user_id)
     await message.answer(t(lang, "welcome"), parse_mode="Markdown")
 
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
-    lang = get_user_lang_or_default(message.from_user.id)
+    lang = await get_user_lang_or_default(message.from_user.id)
     await message.answer(t(lang, "help"), parse_mode="Markdown")
 
 
 @router.message(Command("quality"))
 async def cmd_quality(message: Message) -> None:
-    
-
-    lang = get_user_lang_or_default(message.from_user.id)
+    lang = await get_user_lang_or_default(message.from_user.id)
     await message.answer(t(lang, "quality_options"), parse_mode="Markdown")
 
 
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message) -> None:
-    user_id = message.from_user.id    
-    lang = get_user_lang_or_default(user_id)
+    user_id = message.from_user.id
+    lang = await get_user_lang_or_default(user_id)
     if cancel_download(user_id):
         await message.answer(t(lang, "cancel_requested"))
     else:
@@ -56,7 +54,7 @@ async def cmd_cancel(message: Message) -> None:
 
 @router.message(Command("stats"))
 async def cmd_stats(message: Message) -> None:
-    user_id = message.from_user.id  
+    user_id = message.from_user.id
 
     if settings.admin_id and user_id != settings.admin_id:
         await message.answer("This command is only available to the bot administrator.")
