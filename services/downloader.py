@@ -129,7 +129,8 @@ def _get_proxy(url: str) -> str | None:
     """
     if "youtube.com" not in url and "youtu.be" not in url:
         return None
-    return os.getenv("YTDLP_PROXY") or None
+    proxy = os.getenv("YTDLP_PROXY", "").strip()
+    return proxy if proxy else None
 
 # Spoof a real browser User-Agent so yt-dlp doesn't look like a bot
 _HTTP_HEADERS = {
