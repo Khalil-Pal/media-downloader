@@ -171,7 +171,7 @@ QUALITY_FORMATS: dict[str, str] = {
     ),
 }
 
-AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio"
+AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best"
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
