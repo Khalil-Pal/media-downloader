@@ -41,13 +41,34 @@ logger = logging.getLogger(__name__)
 
 # ── Cookie helpers (fallback only — not needed for public videos) ─────────────
 
-def _get_cookies_file() -> str | None:
+def _get_cookies_file(url: str = "") -> str | None:
     """
-    Return a cookies file path only if one is configured.
-    Cookies are now optional — the iOS/Android player clients handle public
-    videos without them. Cookies are only used as a fallback for age-restricted
-    or login-walled content.
+    Return a cookies file path for the given URL.
+
+    Instagram and YouTube use separate cookie files since their cookies
+    don't share a single domain-agnostic file in this project's setup:
+      - instagram.com URLs -> INSTAGRAM_COOKIES env var, then instagram_cookies.txt
+      - everything else    -> YOUTUBE_COOKIES env var, then cookies.txt
+
+    Cookies are optional for YouTube — the iOS/Android player clients handle
+    most public videos without them. For Instagram, cookies are required
+    for most posts as of 2026.
     """
+    is_instagram = "instagram.com" in url.lower()
+
+    if is_instagram:
+        ig_cookies = os.getenv("INSTAGRAM_COOKIES")
+        if ig_cookies:
+            tmp = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".txt", delete=False, encoding="utf-8"
+            )
+            tmp.write(ig_cookies)
+            tmp.close()
+            return tmp.name
+        if os.path.exists("instagram_cookies.txt"):
+            return "instagram_cookies.txt"
+        return None
+
     cookies_content = os.getenv("YOUTUBE_COOKIES")
     if cookies_content:
         tmp = tempfile.NamedTemporaryFile(
@@ -60,7 +81,7 @@ def _get_cookies_file() -> str | None:
     if os.path.exists("cookies.txt"):
         return "cookies.txt"
 
-    return None  # Fine — iOS/Android clients work without cookies
+    return None  # Fine — iOS/Android clients work without cookies for YouTube
 
 
 # ── YouTube player client config ──────────────────────────────────────────────
@@ -245,7 +266,7 @@ async def _safe_callback(callback: ProgressCallback, msg: str) -> None:
 
 def _extract_info_sync(url: str) -> dict:
     """Blocking metadata fetch — no download."""
-    cookies_file = _get_cookies_file()
+    cookies_file = _get_cookies_file(url)
     ydl_opts: dict = {
         "quiet": True,
         "no_warnings": True,
@@ -270,7 +291,7 @@ def _download_sync(
     progress_hook: Callable[[dict], None],
 ) -> tuple[Path, dict]:
     """Blocking download — run inside a thread executor."""
-    cookies_file = _get_cookies_file()
+    cookies_file = _get_cookies_file(url)
     outtmpl = str(output_path / "%(title).80s.%(ext)s")
 
     postprocessors = []
