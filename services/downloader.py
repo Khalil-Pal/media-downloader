@@ -111,6 +111,26 @@ def _get_extractor_args(url: str) -> dict:
         return _EXTRACTOR_ARGS_YOUTUBE
     return _EXTRACTOR_ARGS_GENERIC
 
+
+def _get_proxy(url: str) -> str | None:
+    """
+    Return a proxy URL only for YouTube requests.
+
+    Railway's datacenter IP gets a hard 403 from YouTube on every player
+    client, which yt-dlp then misreports as "DRM protected". A residential
+    proxy routes the request through a non-datacenter IP that YouTube
+    doesn't block.
+
+    Instagram and all other platforms are left untouched (return None) since
+    they already work fine without a proxy via cookies.
+
+    Configure with YTDLP_PROXY env var, e.g.:
+      YTDLP_PROXY=http://username:password@p.webshare.io:80
+    """
+    if "youtube.com" not in url and "youtu.be" not in url:
+        return None
+    return os.getenv("YTDLP_PROXY") or None
+
 # Spoof a real browser User-Agent so yt-dlp doesn't look like a bot
 _HTTP_HEADERS = {
     "User-Agent": (
@@ -275,6 +295,7 @@ def _extract_info_sync(url: str) -> dict:
         "extractor_args": _get_extractor_args(url),
         "http_headers": _HTTP_HEADERS,
         "nocheckcertificate": True,
+        "proxy": _get_proxy(url),
     }
     if cookies_file:
         ydl_opts["cookiefile"] = cookies_file
@@ -314,6 +335,7 @@ def _download_sync(
         "geo_bypass": True,
         "extractor_args": _get_extractor_args(url),
         "http_headers": _HTTP_HEADERS,
+        "proxy": _get_proxy(url),
         # Retry logic for flaky connections
         "retries": 5,
         "fragment_retries": 5,
