@@ -94,15 +94,7 @@ venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
----
-
-## 🔑 Configuration
-
-Create a `.env` file:
-
-```env
-BOT_TOKEN=your_telegram_bot_token
-```
+--
 
 ---
 
