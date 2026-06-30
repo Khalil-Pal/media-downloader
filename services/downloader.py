@@ -171,7 +171,7 @@ QUALITY_FORMATS: dict[str, str] = {
     ),
 }
 
-AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best"
+AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio"
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
@@ -306,7 +306,6 @@ def _download_sync(
     ydl_opts: dict = {
         "format": format_str,
         "outtmpl": outtmpl,
-        "merge_output_format": "mp4",
         "quiet": True,
         "no_warnings": True,
         "progress_hooks": [progress_hook],
@@ -322,6 +321,8 @@ def _download_sync(
     }
     if cookies_file:
         ydl_opts["cookiefile"] = cookies_file
+    if not audio_only:
+        ydl_opts["merge_output_format"] = "mp4"
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
