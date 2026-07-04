@@ -16,7 +16,7 @@ SUPPORTED_PLATFORMS: dict[str, re.Pattern[str]] = {
         r"instagram\.com/(p|reel|tv)/", re.IGNORECASE
     ),
     "Threads": re.compile(
-        r"threads\.net/@[\w.]+/post/", re.IGNORECASE
+        r"threads\.(net|com)/@[\w.]+/post/", re.IGNORECASE
     ),
     "Facebook": re.compile(
         r"(facebook\.com|fb\.watch)/.*(videos|watch|reel)", re.IGNORECASE
