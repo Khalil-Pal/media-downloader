@@ -94,6 +94,11 @@ async def _run_download(message, bot, url, quality="best", audio_only=False):
         try:
             if actual_size > SMALL_FILE_LIMIT:
                 from services.telethon_uploader import upload_large_file
+                size_mb = actual_size / 1024 / 1024
+                await status_msg.edit_text(
+                    f"⬆️ Uploading large file ({size_mb:.0f} MB) via Telethon…\n"
+                    f"This may take a few minutes for large files. Please wait."
+                )
                 await upload_large_file(
                     chat_id=message.chat.id,
                     file_path=result.file_path,

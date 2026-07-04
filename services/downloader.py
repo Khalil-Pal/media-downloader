@@ -104,40 +104,15 @@ _EXTRACTOR_ARGS_YOUTUBE = {
     }
 }
 
-# Generic args for Instagram, Twitter, etc. — no skip rules.
+# Generic args for Instagram, TikTok, Twitter, etc. — no skip rules.
 _EXTRACTOR_ARGS_GENERIC: dict = {}
-
-# TikTok-specific args — use the app API endpoint instead of the web one.
-# "status code 0" errors come from TikTok blocking server IPs on the web API.
-# The mobile app endpoint (api22-normal-c-useast2a.tiktokv.com) is less
-# aggressively blocked and works from datacenter IPs.
-_EXTRACTOR_ARGS_TIKTOK = {
-    "tiktok": {
-        "api_hostname": "api22-normal-c-useast2a.tiktokv.com",
-        "app_version": "35.1.3",
-        "manifest_app_version": "35.1.3",
-    }
-}
 
 
 def _get_extractor_args(url: str) -> dict:
     """Return the right extractor args based on the URL."""
     if "youtube.com" in url or "youtu.be" in url:
         return _EXTRACTOR_ARGS_YOUTUBE
-    if "tiktok.com" in url:
-        return _EXTRACTOR_ARGS_TIKTOK
     return _EXTRACTOR_ARGS_GENERIC
-
-
-def _get_impersonate_target(url: str) -> str | None:
-    """
-    Return a browser impersonation target for platforms that require it.
-    Requires curl_cffi to be installed (added to requirements.txt).
-    Dailymotion blocks requests that don't look like a real browser.
-    """
-    if "dailymotion.com" in url:
-        return "chrome"
-    return None
 
 
 # Spoof a real browser User-Agent so yt-dlp doesn't look like a bot
@@ -199,6 +174,9 @@ QUALITY_FORMATS: dict[str, str] = {
     ),
 }
 
+# YouTube audio streams are DASH-only — the "skip dash" rule in
+# _EXTRACTOR_ARGS_YOUTUBE must NOT apply when downloading audio only.
+# We solve this by using a separate ydl_opts for audio that omits skip.
 AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio[ext=opus]/bestaudio[ext=mp3]/bestaudio"
 
 
@@ -307,9 +285,6 @@ def _extract_info_sync(url: str) -> dict:
     }
     if cookies_file:
         ydl_opts["cookiefile"] = cookies_file
-    impersonate = _get_impersonate_target(url)
-    if impersonate:
-        ydl_opts["impersonate"] = impersonate
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)
@@ -334,6 +309,19 @@ def _download_sync(
             "preferredquality": "192",
         })
 
+    # For YouTube audio-only, we must NOT skip dash/hls since YouTube
+    # audio streams ARE dash/hls. Use a modified extractor args for this case.
+    is_youtube = "youtube.com" in url or "youtu.be" in url
+    if is_youtube and audio_only:
+        extractor_args = {
+            "youtube": {
+                "player_client": ["mweb", "tv_embedded", "ios", "android", "web"],
+                # No "skip" here — audio needs dash/hls
+            }
+        }
+    else:
+        extractor_args = _get_extractor_args(url)
+
     ydl_opts: dict = {
         "format": format_str,
         "outtmpl": outtmpl,
@@ -343,7 +331,7 @@ def _download_sync(
         "postprocessors": postprocessors,
         "nocheckcertificate": False,
         "geo_bypass": True,
-        "extractor_args": _get_extractor_args(url),
+        "extractor_args": extractor_args,
         "http_headers": _HTTP_HEADERS,
         # Retry logic for flaky connections
         "retries": 5,
@@ -354,9 +342,6 @@ def _download_sync(
         ydl_opts["cookiefile"] = cookies_file
     if not audio_only:
         ydl_opts["merge_output_format"] = "mp4"
-    impersonate = _get_impersonate_target(url)
-    if impersonate:
-        ydl_opts["impersonate"] = impersonate
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -513,15 +498,13 @@ def _friendly_error(raw: str) -> str:
     if "removed" in lower or "no longer available" in lower:
         return "❌ This content has been removed or is no longer available."
     if "unsupported url" in lower:
-        return "❌ This URL is not supported. Supported platforms: YouTube, Instagram, TikTok, Facebook, Twitter/X, Threads, Reddit, Vimeo."
+        return "❌ This URL is not supported. Try YouTube, Instagram, or Facebook."
     if "too large" in lower or "max filesize" in lower:
         return f"❌ File exceeds the {settings.max_file_size_mb} MB limit."
     if "network" in lower or "connection" in lower:
         return "❌ Network error. Please try again in a moment."
     if "login" in lower or "sign in" in lower:
         return "❌ This content requires a login. Try a public video instead."
-    if "tiktok" in lower and ("status code 0" in lower or "not available" in lower):
-        return "❌ TikTok blocked this request. Try again in a moment or try a different video."
     if "format" in lower and "not available" in lower:
         return "❌ No downloadable format found for this video. Try a different quality."
     return f"❌ Download failed: {raw[:200]}"

@@ -93,6 +93,13 @@ async def upload_large_file(
     # Resolve numeric chat_id for Telethon
     entity = await client.get_entity(chat_id)
 
+    file_size = file_path.stat().st_size
+    logger.info("Starting Telethon upload: %s (%.1f MB)", file_path.name, file_size / 1024 / 1024)
+
+    def _progress(sent, total):
+        pct = (sent / total * 100) if total else 0
+        logger.info("Upload progress: %.1f%% (%d / %d bytes)", pct, sent, total)
+
     if is_audio:
         await client.send_file(
             entity,
@@ -100,6 +107,7 @@ async def upload_large_file(
             caption=caption,
             voice=False,
             attributes=[],
+            progress_callback=_progress,
         )
     else:
         await client.send_file(
@@ -107,6 +115,7 @@ async def upload_large_file(
             str(file_path),
             caption=caption,
             supports_streaming=True,
+            progress_callback=_progress,
         )
 
-    logger.info("Large file uploaded via Telethon: %s", file_path.name)
+    logger.info("✅ Large file uploaded via Telethon: %s", file_path.name)
