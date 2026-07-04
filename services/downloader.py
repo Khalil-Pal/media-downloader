@@ -107,10 +107,25 @@ _EXTRACTOR_ARGS_YOUTUBE = {
 # Generic args for Instagram, Twitter, etc. — no skip rules.
 _EXTRACTOR_ARGS_GENERIC: dict = {}
 
+# TikTok-specific args — use the app API endpoint instead of the web one.
+# "status code 0" errors come from TikTok blocking server IPs on the web API.
+# The mobile app endpoint (api22-normal-c-useast2a.tiktokv.com) is less
+# aggressively blocked and works from datacenter IPs.
+_EXTRACTOR_ARGS_TIKTOK = {
+    "tiktok": {
+        "api_hostname": "api22-normal-c-useast2a.tiktokv.com",
+        "app_version": "35.1.3",
+        "manifest_app_version": "35.1.3",
+    }
+}
+
+
 def _get_extractor_args(url: str) -> dict:
     """Return the right extractor args based on the URL."""
     if "youtube.com" in url or "youtu.be" in url:
         return _EXTRACTOR_ARGS_YOUTUBE
+    if "tiktok.com" in url:
+        return _EXTRACTOR_ARGS_TIKTOK
     return _EXTRACTOR_ARGS_GENERIC
 
 
@@ -118,13 +133,8 @@ def _get_impersonate_target(url: str) -> str | None:
     """
     Return a browser impersonation target for platforms that require it.
     Requires curl_cffi to be installed (added to requirements.txt).
-
-    TikTok: requires curl_cffi impersonation — without it yt-dlp gets
-    "status code 0" or "Unable to extract webpage video data" on server IPs.
-    Dailymotion: requires firefox/chrome impersonation to bypass bot detection.
+    Dailymotion blocks requests that don't look like a real browser.
     """
-    if "tiktok.com" in url:
-        return "chrome"
     if "dailymotion.com" in url:
         return "chrome"
     return None
