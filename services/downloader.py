@@ -69,22 +69,11 @@ def _get_cookies_file(url: str = "") -> str | None:
             return "instagram_cookies.txt"
         return None
 
-    cookies_content = os.getenv("YOUTUBE_COOKIES")
-    if cookies_content:
-        tmp = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, encoding="utf-8"
-        )
-        tmp.write(cookies_content)
-        tmp.close()
-        logger.info("Using YOUTUBE_COOKIES env var for cookies (%d chars)", len(cookies_content))
-        return tmp.name
-
     if os.path.exists("cookies.txt"):
         logger.info("Using cookies.txt file on disk (%d bytes)", os.path.getsize("cookies.txt"))
         return "cookies.txt"
 
-    logger.warning("No YouTube cookies found — env var empty and cookies.txt missing.")
-    return None  # Fine — iOS/Android clients work without cookies for YouTube
+    return None
 
 
 # ── YouTube player client config ──────────────────────────────────────────────
