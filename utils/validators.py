@@ -16,16 +16,13 @@ SUPPORTED_PLATFORMS: dict[str, re.Pattern[str]] = {
         r"instagram\.com/(p|reel|tv)/", re.IGNORECASE
     ),
     "Threads": re.compile(
-        r"threads\.(net|com)/@[\w.]+/post/", re.IGNORECASE
+        r"threads\.net/@[\w.]+/post/", re.IGNORECASE
     ),
     "Facebook": re.compile(
         r"(facebook\.com|fb\.watch)/.*(videos|watch|reel)", re.IGNORECASE
     ),
     "Twitter/X": re.compile(
         r"(twitter\.com|x\.com)/.*/status/", re.IGNORECASE
-    ),
-    "TikTok": re.compile(
-        r"tiktok\.com/", re.IGNORECASE
     ),
     "Vimeo": re.compile(
         r"vimeo\.com/\d+", re.IGNORECASE

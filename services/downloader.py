@@ -93,7 +93,7 @@ _EXTRACTOR_ARGS_YOUTUBE = {
     }
 }
 
-# Generic args for Instagram, TikTok, Twitter, etc. — no skip rules.
+# Generic args for Instagram, Twitter, Facebook, etc. — no skip rules.
 _EXTRACTOR_ARGS_GENERIC: dict = {}
 
 
