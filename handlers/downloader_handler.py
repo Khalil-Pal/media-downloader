@@ -1,41 +1,50 @@
 """
 handlers/downloader_handler.py – /download, /audio commands + plain URL messages.
+
+Files up to 50 MB are sent with the normal Bot API (aiogram).
+Files larger than 50 MB are sent by the SAME bot account through Telethon/MTProto.
+This file deliberately does not require Telegram's Local Bot API server.
 """
 from __future__ import annotations
 
 import logging
 
-from aiogram import Bot, Router, F
+from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.types import FSInputFile, Message
 
-from services import download_media, fetch_info, cleanup_session, stats
-from services.downloader import get_video_dimensions
-from config.settings import settings
-from services.user_store import get_user_lang_or_default, register_user
-from utils import is_valid_url, detect_platform, extract_url_from_text, truncate, rate_limiter
-from utils.i18n import t
 from handlers.common import quality_keyboard
+from services import cleanup_session, download_media, fetch_info, stats
+from services.downloader import get_video_dimensions
+from services.telethon_uploader import upload_large_file
+from services.user_store import get_user_lang_or_default, register_user
+from utils import (
+    detect_platform,
+    extract_url_from_text,
+    is_valid_url,
+    rate_limiter,
+    truncate,
+)
+from utils.i18n import t
 
 logger = logging.getLogger(__name__)
 router = Router(name="downloader")
 
 _active_downloads: set[int] = set()
 
-CLOUD_BOT_API_FILE_LIMIT = 50 * 1024 * 1024
+# Telegram's HTTP Bot API upload limit. Larger files use Telethon below.
+SMALL_FILE_LIMIT = 50 * 1024 * 1024
 
 
-async def _run_download(message, bot, url, quality="best", audio_only=False):
+async def _run_download(message: Message, bot: Bot, url: str, quality: str = "best", audio_only: bool = False) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
     lang = await get_user_lang_or_default(user_id)
 
-    # Rate limit check
     allowed, reason = await rate_limiter.check(user_id)
     if not allowed:
         await message.answer(reason)
         return
 
-    # One download at a time per user
     if user_id in _active_downloads:
         await message.answer(t(lang, "active_download_warning"))
         return
@@ -45,7 +54,6 @@ async def _run_download(message, bot, url, quality="best", audio_only=False):
     result = None
 
     try:
-        # Metadata fetch
         try:
             info = await fetch_info(url)
         except ValueError as exc:
@@ -63,17 +71,19 @@ async def _run_download(message, bot, url, quality="best", audio_only=False):
         )
         await status_msg.edit_text(preview, parse_mode="Markdown")
 
-        # ── Progress callback (edits the status message in-place) ─────────
-        async def on_progress(msg_text):
+        async def on_progress(msg_text: str) -> None:
             try:
                 await status_msg.edit_text(msg_text)
             except Exception:
+                # Telegram may reject an edit when the visible text did not change.
                 pass
 
-        # ── Download ──────────────────────────────────────────────────────
         result = await download_media(
-            url=url, user_id=user_id, quality=quality,
-            audio_only=audio_only, progress_callback=on_progress,
+            url=url,
+            user_id=user_id,
+            quality=quality,
+            audio_only=audio_only,
+            progress_callback=on_progress,
         )
 
         if not result.success or not result.file_path:
@@ -92,51 +102,51 @@ async def _run_download(message, bot, url, quality="best", audio_only=False):
 
         actual_size = result.file_path.stat().st_size
 
-        # ── Upload ────────────────────────────────────────────────────────
         try:
-            # The public Telegram Bot API cannot upload files above 50 MB.
-            # Never fall back to the owner's personal Telethon account: that
-            # makes the media look as though it was sent by the owner, not bot.
-            if actual_size > CLOUD_BOT_API_FILE_LIMIT and not settings.local_bot_api_url:
-                await status_msg.edit_text(
-                    "❌ This file is over 50 MB. Large files must be sent through "
-                    "the bot's Local Bot API server, which is not enabled yet."
-                )
-                await stats.record_failure(user_id)
-                return
-
-            file_input = FSInputFile(result.file_path)
-            if audio_only or result.file_path.suffix.lower() == ".mp3":
-                await bot.send_audio(
+            if actual_size > SMALL_FILE_LIMIT:
+                # IMPORTANT: Telethon is authenticated with BOT_TOKEN in
+                # services/telethon_uploader.py. This sends from the bot,
+                # not from the owner's personal Telegram account.
+                await upload_large_file(
                     chat_id=message.chat.id,
-                    audio=file_input,
+                    file_path=result.file_path,
                     caption=caption,
-                    parse_mode="Markdown",
-                    title=result.info.title,
-                    performer=result.info.uploader,
+                    is_audio=audio_only,
                 )
             else:
-                # Passing the final FFmpeg dimensions prevents Telegram from
-                # guessing the display frame incorrectly on mobile clients.
-                width, height = get_video_dimensions(result.file_path)
-                video_kwargs = {}
-                if width and height:
-                    video_kwargs = {"width": width, "height": height}
+                file_input = FSInputFile(result.file_path)
 
-                await bot.send_video(
-                    chat_id=message.chat.id,
-                    video=file_input,
-                    caption=caption,
-                    parse_mode="Markdown",
-                    supports_streaming=True,
-                    **video_kwargs,
-                )
+                if audio_only or result.file_path.suffix.lower() == ".mp3":
+                    await bot.send_audio(
+                        chat_id=message.chat.id,
+                        audio=file_input,
+                        caption=caption,
+                        parse_mode="Markdown",
+                        title=result.info.title,
+                        performer=result.info.uploader,
+                    )
+                else:
+                    # Explicit dimensions prevent Telegram mobile clients from
+                    # incorrectly guessing the display frame.
+                    width, height = get_video_dimensions(result.file_path)
+                    video_kwargs: dict[str, int] = {}
+                    if width and height:
+                        video_kwargs = {"width": width, "height": height}
+
+                    await bot.send_video(
+                        chat_id=message.chat.id,
+                        video=file_input,
+                        caption=caption,
+                        parse_mode="Markdown",
+                        supports_streaming=True,
+                        **video_kwargs,
+                    )
 
             await status_msg.delete()
             await stats.record_success(user_id)
 
         except Exception as exc:
-            logger.error("Upload error: %s", exc)
+            logger.exception("Upload error for %s", result.file_path.name)
             await status_msg.edit_text(t(lang, "upload_failed", error=str(exc)))
             await stats.record_failure(user_id)
 
@@ -151,11 +161,10 @@ async def _run_download(message, bot, url, quality="best", audio_only=False):
             cleanup_session(result.file_path)
 
 
-# ── Command handlers ──────────────────────────────────────────────────────────
-
 @router.message(Command("download"))
 async def cmd_download(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
+    await register_user(user_id)
     lang = await get_user_lang_or_default(user_id)
     text = message.text or ""
     parts = text.split(maxsplit=1)
@@ -179,6 +188,7 @@ async def cmd_download(message: Message, bot: Bot) -> None:
 @router.message(Command("audio"))
 async def cmd_audio(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
+    await register_user(user_id)
     lang = await get_user_lang_or_default(user_id)
     text = message.text or ""
     parts = text.split(maxsplit=1)
@@ -197,8 +207,8 @@ async def cmd_audio(message: Message, bot: Bot) -> None:
 
 @router.message(F.text & F.text.regexp(r"https?://\S+"))
 async def handle_url_message(message: Message, bot: Bot) -> None:
-    await register_user(message.from_user.id)
-    lang = await get_user_lang_or_default(message.from_user.id)
+    await register_user(message.from_user.id)  # type: ignore[union-attr]
+    lang = await get_user_lang_or_default(message.from_user.id)  # type: ignore[union-attr]
     url = extract_url_from_text(message.text or "")
 
     if not url or not is_valid_url(url):
