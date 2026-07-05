@@ -19,6 +19,7 @@ Instagram cookie handling is intentionally left unchanged.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import subprocess
@@ -149,11 +150,11 @@ _cancel_flags: dict[int, asyncio.Event] = {}
 QUALITY_FORMATS: dict[str, str] = {
     # Select the best available media.  Video is converted to a Telegram-safe
     # H.264/AAC MP4 after download, so do not restrict source codecs here.
-    "best": "bv*+ba/b",
-    "720": "bv*[height<=720]+ba/b[height<=720]/b",
-    "480": "bv*[height<=480]+ba/b[height<=480]/b",
-    "360": "bv*[height<=360]+ba/b[height<=360]/b",
-    "144": "bv*[height<=144]+ba/b[height<=144]/b",
+    "best": "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b",
+    "720": "bv*[height<=720][vcodec^=avc1]+ba[acodec^=mp4a]/bv*[height<=720][ext=mp4]+ba[ext=m4a]/bv*[height<=720]+ba/b[height<=720]/b",
+    "480": "bv*[height<=480][vcodec^=avc1]+ba[acodec^=mp4a]/bv*[height<=480][ext=mp4]+ba[ext=m4a]/bv*[height<=480]+ba/b[height<=480]/b",
+    "360": "bv*[height<=360][vcodec^=avc1]+ba[acodec^=mp4a]/bv*[height<=360][ext=mp4]+ba[ext=m4a]/bv*[height<=360]+ba/b[height<=360]/b",
+    "144": "bv*[height<=144][vcodec^=avc1]+ba[acodec^=mp4a]/bv*[height<=144][ext=mp4]+ba[ext=m4a]/bv*[height<=144]+ba/b[height<=144]/b",
 }
 
 # Match yt-dlp's recommended audio-selection order, then convert with FFmpeg.
@@ -275,7 +276,7 @@ def _extract_info_sync(url: str) -> dict:
 
 
 def get_video_dimensions(video_path: Path) -> tuple[int | None, int | None]:
-    """Return the encoded video dimensions for Telegram's sendVideo metadata."""
+    """Return encoded video dimensions for Telegram metadata."""
     command = [
         "ffprobe", "-v", "error", "-select_streams", "v:0",
         "-show_entries", "stream=width,height",
@@ -298,54 +299,181 @@ def get_video_dimensions(video_path: Path) -> tuple[int | None, int | None]:
     return None, None
 
 
-def _normalise_video_for_telegram(video_path: Path) -> Path:
-    """
-    Create a mobile-safe MP4 without cropping or turning a landscape video square.
+def _telegram_output_path(video_path: Path) -> Path:
+    """Build a safe MP4 name even when the source title contains long Unicode text."""
+    suffix = ".telegram.mp4"
+    # Linux limits a single filename component to 255 bytes, not characters.
+    # Media titles in Arabic/Russian can exceed that after adding the suffix.
+    stem = video_path.stem
+    while stem and len((stem + suffix).encode("utf-8")) > 220:
+        stem = stem[:-1]
+    return video_path.with_name(f"{stem or 'video'}{suffix}")
 
-    This deliberately removes the source display matrix/rotation metadata and
-    writes explicit square-pixel H.264/AAC media. Telegram Desktop is tolerant
-    of many source codecs and metadata combinations; Telegram mobile is not.
-    """
-    normalized_path = video_path.with_name(f"{video_path.stem}.telegram.mp4")
+
+def _probe_streams(video_path: Path) -> dict:
+    """Read only the stream facts needed to choose remuxing or transcoding."""
+    command = [
+        "ffprobe", "-v", "error", "-show_entries",
+        (
+            "stream=codec_type,codec_name,pix_fmt,width,height,"
+            "sample_aspect_ratio:stream_tags=rotate:stream_side_data=rotation"
+        ),
+        "-of", "json", str(video_path),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(completed.stdout or "{}")
+    except (FileNotFoundError, subprocess.CalledProcessError, json.JSONDecodeError):
+        return {}
+
+
+def _has_rotation(video_stream: dict) -> bool:
+    """Return True for a non-zero rotation in stream tags or side-data."""
+    rotate_value = (video_stream.get("tags") or {}).get("rotate")
+    try:
+        if rotate_value is not None and int(float(rotate_value)) % 360:
+            return True
+    except (TypeError, ValueError):
+        return True
+
+    for side_data in video_stream.get("side_data_list") or []:
+        rotation = side_data.get("rotation")
+        try:
+            if rotation is not None and int(float(rotation)) % 360:
+                return True
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
+def _can_remux_for_telegram(video_path: Path) -> bool:
+    """Whether the file is already H.264/AAC and only needs metadata cleanup."""
+    data = _probe_streams(video_path)
+    streams = data.get("streams") or []
+    video = next((item for item in streams if item.get("codec_type") == "video"), None)
+    audio = next((item for item in streams if item.get("codec_type") == "audio"), None)
+    if not video:
+        return False
+
+    video_ok = (
+        video.get("codec_name") == "h264"
+        and video.get("pix_fmt") in {"yuv420p", "yuvj420p"}
+        and video.get("sample_aspect_ratio") in {None, "N/A", "1:1"}
+        and not _has_rotation(video)
+    )
+    audio_ok = audio is None or audio.get("codec_name") == "aac"
+    return video_ok and audio_ok
+
+
+def _run_ffmpeg(command: list[str], source_name: str) -> None:
+    """Run FFmpeg and preserve a useful reason in Railway logs on failure."""
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("FFmpeg is required to prepare videos for Telegram.") from exc
+
+    if completed.returncode == 0:
+        return
+
+    details = (completed.stderr or completed.stdout or "").strip()
+    if not details:
+        details = f"FFmpeg exited with status {completed.returncode}."
+    logger.warning("FFmpeg failed for %s: %s", source_name, details[-1000:])
+    raise RuntimeError(details[-500:])
+
+
+def _remux_for_telegram(video_path: Path, output_path: Path) -> None:
+    """Fast metadata cleanup without decoding/re-encoding a large video."""
     command = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-i", str(video_path),
         "-map", "0:v:0", "-map", "0:a:0?",
-        # Do not copy source rotation, display-matrix, sample-aspect, title,
-        # or other container metadata that can confuse Telegram mobile.
         "-map_metadata", "-1", "-map_chapters", "-1",
-        # Width is corrected for the input sample aspect ratio, then pixels are
-        # made square. Both dimensions are even, as H.264 yuv420p requires.
-        "-vf", (
-            "scale=trunc(iw*sar/2)*2:trunc(ih/2)*2:flags=lanczos,"
-            "setsar=1,setdar=dar"
-        ),
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-pix_fmt", "yuv420p", "-tag:v", "avc1",
-        "-c:a", "aac", "-b:a", "128k",
-        "-max_muxing_queue_size", "4096",
+        "-c", "copy",
         "-movflags", "+faststart",
         "-metadata:s:v:0", "rotate=0",
-        str(normalized_path),
+        str(output_path),
     ]
+    _run_ffmpeg(command, video_path.name)
+
+
+def _transcode_for_telegram(video_path: Path, output_path: Path) -> None:
+    """Create a mobile-safe H.264/AAC MP4 using low Railway memory/CPU usage."""
+    command = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(video_path),
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-map_metadata", "-1", "-map_chapters", "-1",
+        # Keep displayed aspect ratio and produce square pixels. ffmpeg's
+        # normal autorotation bakes the orientation into the video first.
+        "-vf", "scale=trunc(ih*dar/2)*2:trunc(ih/2)*2:flags=bicubic,setsar=1",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24",
+        "-pix_fmt", "yuv420p", "-tag:v", "avc1",
+        "-c:a", "aac", "-b:a", "128k",
+        # One encoder thread prevents a single large video from exhausting a
+        # small Railway container. The old code used FFmpeg defaults.
+        "-threads", "1",
+        "-max_muxing_queue_size", "1024",
+        "-movflags", "+faststart",
+        "-metadata:s:v:0", "rotate=0",
+        str(output_path),
+    ]
+    _run_ffmpeg(command, video_path.name)
+
+
+def _normalise_video_for_telegram(video_path: Path) -> Path:
+    """
+    Produce a Telegram-friendly MP4 without turning landscape videos square.
+
+    Ready H.264/AAC videos are remuxed only, which is very fast and avoids the
+    memory spike that made downloads above 50 MB fail. Only unusual source
+    codecs, rotation, or non-square pixels are fully transcoded.
+    """
+    output_path = _telegram_output_path(video_path)
+    output_path.unlink(missing_ok=True)
 
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True)
-    except FileNotFoundError as exc:
-        raise RuntimeError("FFmpeg is required to prepare videos for Telegram.") from exc
-    except subprocess.CalledProcessError as exc:
-        details = (exc.stderr or "").strip()[-400:]
-        raise RuntimeError(f"FFmpeg could not prepare the video: {details}") from exc
+        if _can_remux_for_telegram(video_path):
+            _remux_for_telegram(video_path, output_path)
+        else:
+            _transcode_for_telegram(video_path, output_path)
+    except RuntimeError as transcode_error:
+        # Large AV1/VP9/4K files can be killed by a small cloud container during
+        # full transcode. Sending a cleaned MP4 is better than failing the whole
+        # download. The normal format selector already prefers H.264/AAC.
+        logger.warning(
+            "Full Telegram conversion failed for %s; trying a fast remux instead: %s",
+            video_path.name,
+            transcode_error,
+        )
+        output_path.unlink(missing_ok=True)
+        try:
+            _remux_for_telegram(video_path, output_path)
+        except RuntimeError as remux_error:
+            raise RuntimeError(
+                "FFmpeg could not prepare the video. "
+                f"Details: {str(remux_error)[:250]}"
+            ) from remux_error
 
-    if not normalized_path.exists() or normalized_path.stat().st_size == 0:
+    if not output_path.exists() or output_path.stat().st_size == 0:
         raise RuntimeError("FFmpeg finished without creating the Telegram video.")
 
-    width, height = get_video_dimensions(normalized_path)
+    width, height = get_video_dimensions(output_path)
     if not width or not height:
         raise RuntimeError("The final Telegram video has no valid dimensions.")
 
     video_path.unlink(missing_ok=True)
-    return normalized_path
+    return output_path
 
 def _download_sync(
     url: str,
