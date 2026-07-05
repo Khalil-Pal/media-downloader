@@ -274,23 +274,56 @@ def _extract_info_sync(url: str) -> dict:
         return ydl.extract_info(url, download=False)
 
 
+def get_video_dimensions(video_path: Path) -> tuple[int | None, int | None]:
+    """Return the encoded video dimensions for Telegram's sendVideo metadata."""
+    command = [
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height",
+        "-of", "csv=p=0:s=x", str(video_path),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        raw = completed.stdout.strip()
+        width_text, height_text = raw.split("x", 1)
+        width, height = int(width_text), int(height_text)
+        if width > 0 and height > 0:
+            return width, height
+    except (FileNotFoundError, ValueError, subprocess.CalledProcessError):
+        logger.warning("Could not read video dimensions for %s", video_path.name)
+    return None, None
+
+
 def _normalise_video_for_telegram(video_path: Path) -> Path:
     """
-    Create a mobile-safe MP4 without changing the displayed frame.
+    Create a mobile-safe MP4 without cropping or turning a landscape video square.
 
-    The filter preserves the display aspect ratio while converting non-square
-    pixels to square pixels. FFmpeg also bakes rotation into the pixels, which
-    avoids different aspect-ratio behaviour between Telegram Desktop and mobile.
+    This deliberately removes the source display matrix/rotation metadata and
+    writes explicit square-pixel H.264/AAC media. Telegram Desktop is tolerant
+    of many source codecs and metadata combinations; Telegram mobile is not.
     """
     normalized_path = video_path.with_name(f"{video_path.stem}.telegram.mp4")
     command = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-i", str(video_path),
-        "-map", "0:v:0", "-map", "0:a?",
-        "-vf", "scale=trunc(iw*sar/2)*2:trunc(ih/2)*2,setsar=1",
+        "-map", "0:v:0", "-map", "0:a:0?",
+        # Do not copy source rotation, display-matrix, sample-aspect, title,
+        # or other container metadata that can confuse Telegram mobile.
+        "-map_metadata", "-1", "-map_chapters", "-1",
+        # Width is corrected for the input sample aspect ratio, then pixels are
+        # made square. Both dimensions are even, as H.264 yuv420p requires.
+        "-vf", (
+            "scale=trunc(iw*sar/2)*2:trunc(ih/2)*2:flags=lanczos,"
+            "setsar=1,setdar=dar"
+        ),
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-pix_fmt", "yuv420p",
+        "-pix_fmt", "yuv420p", "-tag:v", "avc1",
         "-c:a", "aac", "-b:a", "128k",
+        "-max_muxing_queue_size", "4096",
         "-movflags", "+faststart",
         "-metadata:s:v:0", "rotate=0",
         str(normalized_path),
@@ -307,9 +340,12 @@ def _normalise_video_for_telegram(video_path: Path) -> Path:
     if not normalized_path.exists() or normalized_path.stat().st_size == 0:
         raise RuntimeError("FFmpeg finished without creating the Telegram video.")
 
+    width, height = get_video_dimensions(normalized_path)
+    if not width or not height:
+        raise RuntimeError("The final Telegram video has no valid dimensions.")
+
     video_path.unlink(missing_ok=True)
     return normalized_path
-
 
 def _download_sync(
     url: str,

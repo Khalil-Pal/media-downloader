@@ -10,6 +10,8 @@ from aiogram.filters import Command
 from aiogram.types import FSInputFile, Message
 
 from services import download_media, fetch_info, cleanup_session, stats
+from services.downloader import get_video_dimensions
+from config.settings import settings
 from services.user_store import get_user_lang_or_default, register_user
 from utils import is_valid_url, detect_platform, extract_url_from_text, truncate, rate_limiter
 from utils.i18n import t
@@ -20,7 +22,7 @@ router = Router(name="downloader")
 
 _active_downloads: set[int] = set()
 
-SMALL_FILE_LIMIT = 50 * 1024 * 1024
+CLOUD_BOT_API_FILE_LIMIT = 50 * 1024 * 1024
 
 
 async def _run_download(message, bot, url, quality="best", audio_only=False):
@@ -92,38 +94,43 @@ async def _run_download(message, bot, url, quality="best", audio_only=False):
 
         # ── Upload ────────────────────────────────────────────────────────
         try:
-            if actual_size > SMALL_FILE_LIMIT:
-                from services.telethon_uploader import upload_large_file
-                size_mb = actual_size / 1024 / 1024
+            # The public Telegram Bot API cannot upload files above 50 MB.
+            # Never fall back to the owner's personal Telethon account: that
+            # makes the media look as though it was sent by the owner, not bot.
+            if actual_size > CLOUD_BOT_API_FILE_LIMIT and not settings.local_bot_api_url:
                 await status_msg.edit_text(
-                    f"⬆️ Uploading large file ({size_mb:.0f} MB) via Telethon…\n"
-                    f"This may take a few minutes for large files. Please wait."
+                    "❌ This file is over 50 MB. Large files must be sent through "
+                    "the bot's Local Bot API server, which is not enabled yet."
                 )
-                await upload_large_file(
+                await stats.record_failure(user_id)
+                return
+
+            file_input = FSInputFile(result.file_path)
+            if audio_only or result.file_path.suffix.lower() == ".mp3":
+                await bot.send_audio(
                     chat_id=message.chat.id,
-                    file_path=result.file_path,
+                    audio=file_input,
                     caption=caption,
-                    is_audio=audio_only,
+                    parse_mode="Markdown",
+                    title=result.info.title,
+                    performer=result.info.uploader,
                 )
             else:
-                file_input = FSInputFile(result.file_path)
-                if audio_only or result.file_path.suffix.lower() == ".mp3":
-                    await bot.send_audio(
-                        chat_id=message.chat.id,
-                        audio=file_input,
-                        caption=caption,
-                        parse_mode="Markdown",
-                        title=result.info.title,
-                        performer=result.info.uploader,
-                    )
-                else:
-                    await bot.send_video(
-                        chat_id=message.chat.id,
-                        video=file_input,
-                        caption=caption,
-                        parse_mode="Markdown",
-                        supports_streaming=True,
-                    )
+                # Passing the final FFmpeg dimensions prevents Telegram from
+                # guessing the display frame incorrectly on mobile clients.
+                width, height = get_video_dimensions(result.file_path)
+                video_kwargs = {}
+                if width and height:
+                    video_kwargs = {"width": width, "height": height}
+
+                await bot.send_video(
+                    chat_id=message.chat.id,
+                    video=file_input,
+                    caption=caption,
+                    parse_mode="Markdown",
+                    supports_streaming=True,
+                    **video_kwargs,
+                )
 
             await status_msg.delete()
             await stats.record_success(user_id)

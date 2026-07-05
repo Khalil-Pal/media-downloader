@@ -34,10 +34,15 @@ class Settings:
     api_id: int = field(default_factory=lambda: _int("API_ID", 0))
     api_hash: str = field(default_factory=lambda: os.getenv("API_HASH", ""))
     phone: str = field(default_factory=lambda: os.getenv("PHONE", ""))
+    # Set only when using Telegram's self-hosted Local Bot API server.
+    # That server is required for bot-originated uploads above 50 MB.
+    local_bot_api_url: str = field(
+        default_factory=lambda: os.getenv("LOCAL_BOT_API_URL", "").rstrip("/")
+    )
 
     # ── File limits ───────────────────────────────────────────────────────
-    # Default is 2 GB.  Files ≤ 50 MB go via the Bot API;
-    # files 50 MB – 2 GB are sent through Telethon (MTProto).
+    # Default is 2 GB. With the Local Bot API enabled, the bot itself
+    # sends files up to 2 GB; the public cloud Bot API is limited to 50 MB.
     # Override with MAX_FILE_SIZE_MB in your .env if you need a lower cap.
     max_file_size_mb: int = field(default_factory=lambda: _int("MAX_FILE_SIZE_MB", 2000))
     download_path: Path = field(

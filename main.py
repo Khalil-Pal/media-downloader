@@ -15,6 +15,8 @@ import os
 from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
@@ -94,9 +96,21 @@ async def on_shutdown(bot: Bot) -> None:
 async def main() -> None:
     logger.info("Sandy Squirrel is waking up...")
 
+    if settings.local_bot_api_url:
+        local_api = TelegramAPIServer.from_base(
+            settings.local_bot_api_url,
+            is_local=True,
+        )
+        bot_session = AiohttpSession(api=local_api)
+        logger.info("Using Local Bot API server at %s", settings.local_bot_api_url)
+    else:
+        bot_session = None
+        logger.warning("Using cloud Bot API: bot uploads are limited to 50 MB.")
+
     bot = Bot(
         token=settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        session=bot_session,
     )
 
     dp = Dispatcher(storage=MemoryStorage())
