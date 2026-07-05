@@ -88,27 +88,31 @@ def _get_cookies_file(url: str = "") -> str | None:
     return None  # Fine — iOS/Android clients work without cookies for YouTube
 
 
-# ── YouTube player client config ──────────────────────────────────────────────
+# ── YouTube extraction configuration ─────────────────────────────────────────
 #
-# Do not skip DASH/HLS manifests here. YouTube commonly exposes its best
-# audio-only streams through those manifests; disabling them breaks MP3 downloads.
-# Use the current default-like clients rather than a long list of hard-coded,
-# older client names.
-_EXTRACTOR_ARGS_YOUTUBE = {
-    "youtube": {
-        "player_client": ["android_vr", "web_safari"],
-    }
-}
-
-# Generic args for Instagram, TikTok, Twitter, etc. — no YouTube-only rules.
+# Do not force particular YouTube player clients here. The forced
+# android_vr/web_safari pair can expose only storyboard/image entries on newer
+# YouTube responses when the server has no EJS JavaScript challenge support.
+# Let yt-dlp choose its current default clients instead.
+#
+# A Deno runtime and EJS support are installed by the accompanying Dockerfile.
+# `remote_components` lets yt-dlp retrieve a current EJS solver when needed.
+_EXTRACTOR_ARGS_YOUTUBE: dict = {}
 _EXTRACTOR_ARGS_GENERIC: dict = {}
 
 
 def _get_extractor_args(url: str) -> dict:
-    """Return the right extractor args based on the URL."""
+    """Return extractor arguments without overriding yt-dlp's defaults."""
+    return _EXTRACTOR_ARGS_YOUTUBE if (
+        "youtube.com" in url or "youtu.be" in url
+    ) else _EXTRACTOR_ARGS_GENERIC
+
+
+def _get_runtime_options(url: str) -> dict:
+    """Options required for modern YouTube JS challenge handling."""
     if "youtube.com" in url or "youtu.be" in url:
-        return _EXTRACTOR_ARGS_YOUTUBE
-    return _EXTRACTOR_ARGS_GENERIC
+        return {"remote_components": ["ejs:github"]}
+    return {}
 
 
 # Spoof a real browser User-Agent so yt-dlp doesn't look like a bot
@@ -141,44 +145,17 @@ _cancel_flags: dict[int, asyncio.Event] = {}
 # Prefer H.264 video + AAC audio. An .mp4 *container* alone does not guarantee
 # mobile compatibility: it can still contain VP9/AV1/Opus streams.
 QUALITY_FORMATS: dict[str, str] = {
-    "best": (
-        "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a][acodec^=mp4a]"
-        "/best[ext=mp4][vcodec^=avc1][acodec^=mp4a]"
-        "/best[ext=mp4]"
-        "/best"
-    ),
-    "720": (
-        "bestvideo[height<=720][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a][acodec^=mp4a]"
-        "/best[height<=720][ext=mp4][vcodec^=avc1][acodec^=mp4a]"
-        "/best[height<=720][ext=mp4]"
-        "/best[height<=720]"
-        "/best"
-    ),
-    "480": (
-        "bestvideo[height<=480][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a][acodec^=mp4a]"
-        "/best[height<=480][ext=mp4][vcodec^=avc1][acodec^=mp4a]"
-        "/best[height<=480][ext=mp4]"
-        "/best[height<=480]"
-        "/best"
-    ),
-    "360": (
-        "bestvideo[height<=360][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a][acodec^=mp4a]"
-        "/best[height<=360][ext=mp4][vcodec^=avc1][acodec^=mp4a]"
-        "/best[height<=360][ext=mp4]"
-        "/best[height<=360]"
-        "/best"
-    ),
-    "144": (
-        "bestvideo[height<=144][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a][acodec^=mp4a]"
-        "/best[height<=144][ext=mp4][vcodec^=avc1][acodec^=mp4a]"
-        "/best[height<=144][ext=mp4]"
-        "/best[height<=144]"
-        "/best"
-    ),
+    # Select the best available media.  Video is converted to a Telegram-safe
+    # H.264/AAC MP4 after download, so do not restrict source codecs here.
+    "best": "bv*+ba/b",
+    "720": "bv*[height<=720]+ba/b[height<=720]/b",
+    "480": "bv*[height<=480]+ba/b[height<=480]/b",
+    "360": "bv*[height<=360]+ba/b[height<=360]/b",
+    "144": "bv*[height<=144]+ba/b[height<=144]/b",
 }
 
 # Match yt-dlp's recommended audio-selection order, then convert with FFmpeg.
-AUDIO_FORMAT = "bestaudio[acodec^=mp4a]/bestaudio/best"
+AUDIO_FORMAT = "ba/b"
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
@@ -281,8 +258,8 @@ def _extract_info_sync(url: str) -> dict:
         "extract_flat": False,
         "skip_download": True,
         "extractor_args": _get_extractor_args(url),
-        "http_headers": _HTTP_HEADERS,
         "nocheckcertificate": True,
+        **_get_runtime_options(url),
     }
     if cookies_file:
         ydl_opts["cookiefile"] = cookies_file
@@ -357,12 +334,12 @@ def _download_sync(
         "nocheckcertificate": False,
         "geo_bypass": True,
         "extractor_args": _get_extractor_args(url),
-        "http_headers": _HTTP_HEADERS,
         "noplaylist": True,
         # Retry logic for flaky connections
         "retries": 5,
         "fragment_retries": 5,
         "file_access_retries": 3,
+        **_get_runtime_options(url),
     }
     if cookies_file:
         ydl_opts["cookiefile"] = cookies_file

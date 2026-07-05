@@ -1,53 +1,42 @@
-# ─────────────────────────────────────────────
-#  Sandy Squirrel Bot – Production Dockerfile
-# ─────────────────────────────────────────────
+# Deno is required by current yt-dlp YouTube extraction for JavaScript challenges.
+FROM denoland/deno:bin-2.6.8 AS deno_bin
 
-# Stage 1: builder
+# Stage 1: Python dependencies
 FROM python:3.11-slim AS builder
-
 WORKDIR /build
-
-# Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
+RUN apt-get update && apt-get install -y --no-install-recommends gcc \
     && rm -rf /var/lib/apt/lists/*
-
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-
-# Stage 2: runtime
+# Stage 2: application image
 FROM python:3.11-slim
-
 LABEL maintainer="sandy-squirrel-bot"
 LABEL description="Sandy Squirrel – Telegram media downloader bot"
 
-# Install runtime dependencies: FFmpeg + yt-dlp native deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Non-root user for security
+# Install Deno before switching to the non-root user. This is the official
+# single-binary image pattern from Deno's Docker documentation.
+COPY --from=deno_bin /deno /usr/local/bin/deno
+RUN deno --version && ffmpeg -version
+
 RUN useradd -m -u 1000 sandybot
 USER sandybot
-
 WORKDIR /app
 
-# Copy installed Python packages from builder
 COPY --from=builder /install /usr/local
-
-# Copy application source
 COPY --chown=sandybot:sandybot . .
-
-# Create directories the bot needs
 RUN mkdir -p temp_downloads logs data
-
 RUN python setup_multilang.py
 
-# Default environment (override via .env or docker-compose)
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    DOWNLOAD_PATH=/app/temp_downloads
+    DOWNLOAD_PATH=/app/temp_downloads \
+    DENO_DIR=/home/sandybot/.cache/deno \
+    DENO_NO_UPDATE_CHECK=1
 
 CMD ["python", "main.py"]
