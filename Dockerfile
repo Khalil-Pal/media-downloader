@@ -1,16 +1,30 @@
-# Deno is required by current yt-dlp YouTube extraction for JavaScript challenges.
-FROM denoland/deno:bin-2.6.8 AS deno_bin
+# ─────────────────────────────────────────────────────────────
+# Sandy Squirrel Bot – YouTube PO-token + FFmpeg Dockerfile
+# ─────────────────────────────────────────────────────────────
+# The provider image contains the Deno-ready bgutil generator. We copy it
+# into the bot image so only one Railway service is required.
+FROM brainicism/bgutil-ytdlp-pot-provider:1.3.1-deno AS pot_provider
 
-# Stage 1: Python dependencies
+# Build Python packages. Deno is available here because yt-dlp-ejs supports it.
 FROM python:3.11-slim AS builder
-WORKDIR /build
-RUN apt-get update && apt-get install -y --no-install-recommends gcc \
-    && rm -rf /var/lib/apt/lists/*
-COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# Stage 2: application image
+WORKDIR /build
+
+COPY --from=pot_provider /usr/bin/deno /usr/local/bin/deno
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN deno --version \
+    && pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+
+# Runtime image
 FROM python:3.11-slim
+
 LABEL maintainer="sandy-squirrel-bot"
 LABEL description="Sandy Squirrel – Telegram media downloader bot"
 
@@ -19,24 +33,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Deno before switching to the non-root user. This is the official
-# single-binary image pattern from Deno's Docker documentation.
-COPY --from=deno_bin /deno /usr/local/bin/deno
-RUN deno --version && ffmpeg -version
+# Deno and the preinstalled bgutil script provider for YouTube only.
+COPY --from=pot_provider /usr/bin/deno /usr/local/bin/deno
+COPY --from=pot_provider /app /opt/bgutil-ytdlp-pot-provider/server
+
+# Copy Python dependencies and app source.
+COPY --from=builder /install /usr/local
 
 RUN useradd -m -u 1000 sandybot
-USER sandybot
-WORKDIR /app
 
-COPY --from=builder /install /usr/local
+WORKDIR /app
 COPY --chown=sandybot:sandybot . .
-RUN mkdir -p temp_downloads logs data
+
+RUN mkdir -p temp_downloads logs data \
+    && chown -R sandybot:sandybot /app /opt/bgutil-ytdlp-pot-provider
+
+USER sandybot
+
 RUN python setup_multilang.py
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     DOWNLOAD_PATH=/app/temp_downloads \
-    DENO_DIR=/home/sandybot/.cache/deno \
-    DENO_NO_UPDATE_CHECK=1
+    DENO_PATH=/usr/local/bin/deno \
+    DENO_DIR=/opt/bgutil-ytdlp-pot-provider/server/.cache/deno \
+    DENO_NO_PROMPT=1 \
+    DENO_NO_UPDATE_CHECK=1 \
+    YOUTUBE_POT_SERVER_HOME=/opt/bgutil-ytdlp-pot-provider/server
 
 CMD ["python", "main.py"]

@@ -6,18 +6,15 @@ Handlers must never call yt-dlp directly.
 
 FIX NOTES
 ─────────
-1. YouTube "format not available" error
-   The old format strings were too specific and crashed when a video didn't
-   have that exact format. The new strings always end with a plain /best
-   catch-all so yt-dlp ALWAYS finds something to download.
+YouTube can return HTTP 403 after metadata has loaded because YouTube may
+require a short-lived Proof-of-Origin (PO) token for Google Video Server
+requests. This file uses yt-dlp's recommended current approach:
 
-2. Cookies expiring on Railway
-   Root cause: YouTube's bot-detection blocks server IPs. Old fix: cookies.
-   New permanent fix: tell yt-dlp to use the iOS and Android player clients.
-   These are the same clients the real Telegram/WhatsApp apps use — YouTube
-   never blocks them, they never expire, and they work for all public videos
-   without any cookies or credentials.
-   For age-restricted content cookies are still used as a fallback if present.
+- use the `mweb` YouTube client;
+- load the external `bgutil-ytdlp-pot-provider` plugin;
+- point the plugin to its Deno-based generator installed by the Dockerfile.
+
+Instagram cookie handling is intentionally left unchanged.
 """
 from __future__ import annotations
 
@@ -43,22 +40,16 @@ logger = logging.getLogger(__name__)
 # ── Cookie helpers (fallback only — not needed for public videos) ─────────────
 
 def _get_cookies_file(url: str = "") -> str | None:
-    """
-    Return a cookies file path for the given URL.
+    """Return an optional cookies file path.
 
-    Instagram and YouTube use separate cookie files since their cookies
-    don't share a single domain-agnostic file in this project's setup:
-      - instagram.com URLs -> INSTAGRAM_COOKIES env var, then instagram_cookies.txt
-      - everything else    -> YOUTUBE_COOKIES env var, then cookies.txt
-
-    Cookies are optional for YouTube — the iOS/Android player clients handle
-    most public videos without them. For Instagram, cookies are required
-    for most posts as of 2026.
+    Instagram keeps its existing cookie support. YouTube cookies are deliberately
+    opt-in: an old cookies.txt copied into a cloud container can make every
+    request look suspicious and lead to HTTP 403 responses.
     """
     is_instagram = "instagram.com" in url.lower()
 
     if is_instagram:
-        ig_cookies = os.getenv("INSTAGRAM_COOKIES")
+        ig_cookies = os.getenv("INSTAGRAM_COOKIES", "").strip()
         if ig_cookies:
             tmp = tempfile.NamedTemporaryFile(
                 mode="w", suffix=".txt", delete=False, encoding="utf-8"
@@ -70,58 +61,69 @@ def _get_cookies_file(url: str = "") -> str | None:
             return "instagram_cookies.txt"
         return None
 
-    cookies_content = os.getenv("YOUTUBE_COOKIES")
-    if cookies_content:
+    # Never silently use cookies.txt for YouTube. Set both variables in Railway
+    # only when account access is genuinely required for a specific video.
+    use_youtube_cookies = os.getenv("USE_YOUTUBE_COOKIES", "false").lower() == "true"
+    youtube_cookies = os.getenv("YOUTUBE_COOKIES", "").strip()
+    if use_youtube_cookies and youtube_cookies:
         tmp = tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", delete=False, encoding="utf-8"
         )
-        tmp.write(cookies_content)
+        tmp.write(youtube_cookies)
         tmp.close()
-        logger.info("Using YOUTUBE_COOKIES env var for cookies (%d chars)", len(cookies_content))
         return tmp.name
 
-    if os.path.exists("cookies.txt"):
-        logger.info("Using cookies.txt file on disk (%d bytes)", os.path.getsize("cookies.txt"))
-        return "cookies.txt"
-
-    logger.warning("No YouTube cookies found — env var empty and cookies.txt missing.")
-    return None  # Fine — iOS/Android clients work without cookies for YouTube
+    return None
 
 
 # ── YouTube extraction configuration ─────────────────────────────────────────
 #
-# Do not force particular YouTube player clients here. The forced
-# android_vr/web_safari pair can expose only storyboard/image entries on newer
-# YouTube responses when the server has no EJS JavaScript challenge support.
-# Let yt-dlp choose its current default clients instead.
+# YouTube can require a fresh, video-bound Proof-of-Origin (PO) token while
+# requesting the real media stream. The installed bgutil provider generates
+# that token automatically for the `mweb` client. This is YouTube-only.
 #
-# A Deno runtime and EJS support are installed by the accompanying Dockerfile.
-# `remote_components` lets yt-dlp retrieve a current EJS solver when needed.
-_EXTRACTOR_ARGS_YOUTUBE: dict = {}
+# Do not add a YouTube `skip: ["dash", "hls"]` rule. That can remove the
+# separate audio streams required for MP3 extraction.
+YOUTUBE_POT_SERVER_HOME = os.getenv(
+    "YOUTUBE_POT_SERVER_HOME",
+    "/opt/bgutil-ytdlp-pot-provider/server",
+)
+
+
+def _is_youtube_url(url: str) -> bool:
+    normalized = url.lower()
+    return "youtube.com" in normalized or "youtu.be" in normalized
+
+
+_EXTRACTOR_ARGS_YOUTUBE: dict = {
+    "youtube": {
+        "player_client": ["mweb"],
+    },
+    "youtubepot-bgutilscript": {
+        "server_home": [YOUTUBE_POT_SERVER_HOME],
+    },
+}
 _EXTRACTOR_ARGS_GENERIC: dict = {}
 
 
 def _get_extractor_args(url: str) -> dict:
-    """Return extractor arguments without overriding yt-dlp's defaults."""
-    return _EXTRACTOR_ARGS_YOUTUBE if (
-        "youtube.com" in url or "youtu.be" in url
-    ) else _EXTRACTOR_ARGS_GENERIC
+    """Return YouTube-only extractor arguments when the URL is YouTube."""
+    return _EXTRACTOR_ARGS_YOUTUBE if _is_youtube_url(url) else _EXTRACTOR_ARGS_GENERIC
 
 
 def _get_runtime_options(url: str) -> dict:
-    """Options required for modern YouTube JS challenge handling."""
-    if "youtube.com" in url or "youtu.be" in url:
-        return {"remote_components": ["ejs:github"]}
-    return {}
+    """Tell yt-dlp where the Deno runtime is for the YouTube POT provider."""
+    if not _is_youtube_url(url):
+        return {}
 
+    return {
+        "js_runtimes": {
+            "deno": {
+                "path": os.getenv("DENO_PATH", "/usr/local/bin/deno"),
+            }
+        }
+    }
 
-# Spoof a real browser User-Agent so yt-dlp doesn't look like a bot
-_HTTP_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-    ),
-}
 
 
 # ── Concurrency + cancellation ────────────────────────────────────────────────
@@ -261,6 +263,10 @@ def _extract_info_sync(url: str) -> dict:
         "nocheckcertificate": True,
         **_get_runtime_options(url),
     }
+    if _is_youtube_url(url):
+        # Smaller range requests can be more reliable on cloud-hosted IPs.
+        ydl_opts["http_chunk_size"] = 10 * 1024 * 1024
+
     if cookies_file:
         ydl_opts["cookiefile"] = cookies_file
 
@@ -341,6 +347,10 @@ def _download_sync(
         "file_access_retries": 3,
         **_get_runtime_options(url),
     }
+    if _is_youtube_url(url):
+        # Smaller range requests can be more reliable on cloud-hosted IPs.
+        ydl_opts["http_chunk_size"] = 10 * 1024 * 1024
+
     if cookies_file:
         ydl_opts["cookiefile"] = cookies_file
     if not audio_only:
