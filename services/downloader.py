@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import subprocess
 import tempfile
 import time
 import uuid
@@ -69,31 +70,37 @@ def _get_cookies_file(url: str = "") -> str | None:
             return "instagram_cookies.txt"
         return None
 
+    cookies_content = os.getenv("YOUTUBE_COOKIES")
+    if cookies_content:
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        )
+        tmp.write(cookies_content)
+        tmp.close()
+        logger.info("Using YOUTUBE_COOKIES env var for cookies (%d chars)", len(cookies_content))
+        return tmp.name
+
     if os.path.exists("cookies.txt"):
         logger.info("Using cookies.txt file on disk (%d bytes)", os.path.getsize("cookies.txt"))
         return "cookies.txt"
 
-    return None
+    logger.warning("No YouTube cookies found — env var empty and cookies.txt missing.")
+    return None  # Fine — iOS/Android clients work without cookies for YouTube
 
 
 # ── YouTube player client config ──────────────────────────────────────────────
 #
-# Use multiple clients in order of reliability.
-# mweb and tv_embedded are the most bot-detection resistant on server IPs.
-# ios/android are good fallbacks.
-# web is last resort (most likely to be blocked on VPS/Railway).
-
-# YouTube-specific args — ios/android clients bypass bot detection on server IPs.
-# WARNING: Do NOT apply "skip hls/dash" globally — Instagram uses HLS exclusively
-# and returns an empty response if HLS is skipped. This was the Instagram bug.
+# Do not skip DASH/HLS manifests here. YouTube commonly exposes its best
+# audio-only streams through those manifests; disabling them breaks MP3 downloads.
+# Use the current default-like clients rather than a long list of hard-coded,
+# older client names.
 _EXTRACTOR_ARGS_YOUTUBE = {
     "youtube": {
-        "player_client": ["mweb", "tv_embedded", "ios", "android", "web"],
-        "skip": ["dash", "hls"],
+        "player_client": ["android_vr", "web_safari"],
     }
 }
 
-# Generic args for Instagram, Twitter, Facebook, etc. — no skip rules.
+# Generic args for Instagram, TikTok, Twitter, etc. — no YouTube-only rules.
 _EXTRACTOR_ARGS_GENERIC: dict = {}
 
 
@@ -131,42 +138,47 @@ _cancel_flags: dict[int, asyncio.Event] = {}
 #   3. pre-merged single file        (no FFmpeg needed, slightly lower quality)
 #   4. absolute best available       (unconditional safety net)
 
+# Prefer H.264 video + AAC audio. An .mp4 *container* alone does not guarantee
+# mobile compatibility: it can still contain VP9/AV1/Opus streams.
 QUALITY_FORMATS: dict[str, str] = {
     "best": (
-        "bestvideo[ext=mp4]+bestaudio[ext=m4a]"
-        "/bestvideo+bestaudio"
+        "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a][acodec^=mp4a]"
+        "/best[ext=mp4][vcodec^=avc1][acodec^=mp4a]"
+        "/best[ext=mp4]"
         "/best"
     ),
     "720": (
-        "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]"
-        "/bestvideo[height<=720]+bestaudio"
+        "bestvideo[height<=720][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a][acodec^=mp4a]"
+        "/best[height<=720][ext=mp4][vcodec^=avc1][acodec^=mp4a]"
+        "/best[height<=720][ext=mp4]"
         "/best[height<=720]"
         "/best"
     ),
     "480": (
-        "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]"
-        "/bestvideo[height<=480]+bestaudio"
+        "bestvideo[height<=480][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a][acodec^=mp4a]"
+        "/best[height<=480][ext=mp4][vcodec^=avc1][acodec^=mp4a]"
+        "/best[height<=480][ext=mp4]"
         "/best[height<=480]"
         "/best"
     ),
     "360": (
-        "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]"
-        "/bestvideo[height<=360]+bestaudio"
+        "bestvideo[height<=360][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a][acodec^=mp4a]"
+        "/best[height<=360][ext=mp4][vcodec^=avc1][acodec^=mp4a]"
+        "/best[height<=360][ext=mp4]"
         "/best[height<=360]"
         "/best"
     ),
     "144": (
-        "bestvideo[height<=144][ext=mp4]+bestaudio[ext=m4a]"
-        "/bestvideo[height<=144]+bestaudio"
+        "bestvideo[height<=144][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a][acodec^=mp4a]"
+        "/best[height<=144][ext=mp4][vcodec^=avc1][acodec^=mp4a]"
+        "/best[height<=144][ext=mp4]"
         "/best[height<=144]"
         "/best"
     ),
 }
 
-# YouTube audio streams are DASH-only — the "skip dash" rule in
-# _EXTRACTOR_ARGS_YOUTUBE must NOT apply when downloading audio only.
-# We solve this by using a separate ydl_opts for audio that omits skip.
-AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio[ext=opus]/bestaudio[ext=mp3]/bestaudio"
+# Match yt-dlp's recommended audio-selection order, then convert with FFmpeg.
+AUDIO_FORMAT = "bestaudio[acodec^=mp4a]/bestaudio/best"
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
@@ -279,6 +291,43 @@ def _extract_info_sync(url: str) -> dict:
         return ydl.extract_info(url, download=False)
 
 
+def _normalise_video_for_telegram(video_path: Path) -> Path:
+    """
+    Create a mobile-safe MP4 without changing the displayed frame.
+
+    The filter preserves the display aspect ratio while converting non-square
+    pixels to square pixels. FFmpeg also bakes rotation into the pixels, which
+    avoids different aspect-ratio behaviour between Telegram Desktop and mobile.
+    """
+    normalized_path = video_path.with_name(f"{video_path.stem}.telegram.mp4")
+    command = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(video_path),
+        "-map", "0:v:0", "-map", "0:a?",
+        "-vf", "scale=trunc(iw*sar/2)*2:trunc(ih/2)*2,setsar=1",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        "-metadata:s:v:0", "rotate=0",
+        str(normalized_path),
+    ]
+
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError("FFmpeg is required to prepare videos for Telegram.") from exc
+    except subprocess.CalledProcessError as exc:
+        details = (exc.stderr or "").strip()[-400:]
+        raise RuntimeError(f"FFmpeg could not prepare the video: {details}") from exc
+
+    if not normalized_path.exists() or normalized_path.stat().st_size == 0:
+        raise RuntimeError("FFmpeg finished without creating the Telegram video.")
+
+    video_path.unlink(missing_ok=True)
+    return normalized_path
+
+
 def _download_sync(
     url: str,
     output_path: Path,
@@ -298,19 +347,6 @@ def _download_sync(
             "preferredquality": "192",
         })
 
-    # For YouTube audio-only, we must NOT skip dash/hls since YouTube
-    # audio streams ARE dash/hls. Use a modified extractor args for this case.
-    is_youtube = "youtube.com" in url or "youtu.be" in url
-    if is_youtube and audio_only:
-        extractor_args = {
-            "youtube": {
-                "player_client": ["mweb", "tv_embedded", "ios", "android", "web"],
-                # No "skip" here — audio needs dash/hls
-            }
-        }
-    else:
-        extractor_args = _get_extractor_args(url)
-
     ydl_opts: dict = {
         "format": format_str,
         "outtmpl": outtmpl,
@@ -320,8 +356,9 @@ def _download_sync(
         "postprocessors": postprocessors,
         "nocheckcertificate": False,
         "geo_bypass": True,
-        "extractor_args": extractor_args,
+        "extractor_args": _get_extractor_args(url),
         "http_headers": _HTTP_HEADERS,
+        "noplaylist": True,
         # Retry logic for flaky connections
         "retries": 5,
         "fragment_retries": 5,
@@ -335,20 +372,26 @@ def _download_sync(
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
 
-    # Find the output file — pick the largest in case of multiple fragments
-    found: Path | None = None
-    largest = -1
-    for f in output_path.iterdir():
-        if f.is_file():
-            sz = f.stat().st_size
-            if sz > largest:
-                largest = sz
-                found = f
+    # FFmpegExtractAudio should leave a final MP3. Do not pick the largest
+    # file: for some YouTube downloads that can be the pre-conversion source.
+    if audio_only:
+        mp3_files = list(output_path.glob("*.mp3"))
+        if not mp3_files:
+            raise FileNotFoundError(
+                "Audio download completed, but FFmpeg did not create an MP3 file."
+            )
+        return max(mp3_files, key=lambda item: item.stat().st_mtime), info
 
-    if not found:
-        raise FileNotFoundError("Download completed but output file not found.")
+    # Only select complete media files, never .part fragments.
+    candidates = [
+        f for f in output_path.iterdir()
+        if f.is_file() and f.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}
+    ]
+    if not candidates:
+        raise FileNotFoundError("Download completed but output video was not found.")
 
-    return found, info
+    found = max(candidates, key=lambda item: item.stat().st_size)
+    return _normalise_video_for_telegram(found), info
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
