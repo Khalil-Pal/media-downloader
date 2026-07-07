@@ -58,11 +58,29 @@ async def cb_cancel(callback: CallbackQuery) -> None:
     user_id = callback.from_user.id
     lang = await get_user_lang_or_default(user_id)
 
+    parts = (callback.data or "").split(":", 1)
+    if len(parts) != 2:
+        await callback.answer(t(lang, "invalid_selection"), show_alert=True)
+        return
+
+    try:
+        target_user_id = int(parts[1])
+    except ValueError:
+        await callback.answer(t(lang, "invalid_selection"), show_alert=True)
+        return
+
+    if target_user_id != user_id:
+        await callback.answer(
+            "This cancel button belongs to another download.",
+            show_alert=True,
+        )
+        return
+
     await callback.answer(t(lang, "cancelling"))
 
     from services import cancel_download
 
-    cancel_download(user_id)
+    cancel_download(target_user_id)
 
     try:
         await callback.message.edit_text(t(lang, "download_cancelled"))
