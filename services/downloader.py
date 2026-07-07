@@ -484,7 +484,7 @@ def _download_sync(
 ) -> tuple[Path, dict]:
     """Blocking download — run inside a thread executor."""
     cookies_file = _get_cookies_file(url)
-    outtmpl = str(output_path / "%(title).80s.%(ext)s")
+    outtmpl = str(output_path / "media.%(ext)s")
 
     postprocessors = []
     if audio_only:
