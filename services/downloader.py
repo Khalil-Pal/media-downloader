@@ -107,6 +107,11 @@ def _is_youtube_url(url: str) -> bool:
     return "youtube.com" in normalized or "youtu.be" in normalized
 
 
+def _is_instagram_url(url: str) -> bool:
+    normalized = url.lower()
+    return "instagram.com" in normalized
+
+
 _EXTRACTOR_ARGS_YOUTUBE: dict = {
     "youtube": {
         "player_client": ["mweb"],
@@ -263,6 +268,33 @@ async def _safe_callback(callback: ProgressCallback, msg: str) -> None:
         pass
 
 
+def _extract_instagram_info_sync(url: str) -> dict:
+    """Blocking Instagram metadata fallback using instaloader."""
+    try:
+        from services.instagram_downloader import fetch_instagram_info
+    except ModuleNotFoundError as exc:
+        raise yt_dlp.utils.DownloadError(
+            "Instagram fallback requires the instaloader package."
+        ) from exc
+
+    info = fetch_instagram_info(url)
+    if not info:
+        raise yt_dlp.utils.DownloadError("Instagram fallback could not fetch metadata.")
+    if not info.get("is_video", True):
+        raise yt_dlp.utils.DownloadError("Instagram post does not contain a video.")
+
+    return {
+        "title": info.get("title") or "Instagram video",
+        "uploader": info.get("uploader") or "Instagram",
+        "duration": info.get("duration") or 0,
+        "extractor_key": "Instagram",
+        "filesize": None,
+        "filesize_approx": None,
+        "thumbnail": None,
+        "formats": [],
+    }
+
+
 def _extract_info_sync(url: str) -> dict:
     """Blocking metadata fetch — no download."""
     cookies_file, temporary_cookies_file = _get_cookies_file(url)
@@ -285,6 +317,11 @@ def _extract_info_sync(url: str) -> dict:
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(url, download=False)
+    except yt_dlp.utils.DownloadError:
+        if _is_instagram_url(url):
+            logger.info("yt-dlp Instagram metadata failed; trying instaloader fallback.")
+            return _extract_instagram_info_sync(url)
+        raise
     finally:
         _remove_temp_cookies_file(cookies_file, temporary_cookies_file)
 
@@ -489,6 +526,47 @@ def _normalise_video_for_telegram(video_path: Path) -> Path:
     video_path.unlink(missing_ok=True)
     return output_path
 
+
+def _extract_audio_from_video(video_path: Path, output_dir: Path) -> Path:
+    """Extract a Telegram-friendly MP3 from a fallback video download."""
+    output_path = output_dir / "media.mp3"
+    output_path.unlink(missing_ok=True)
+    command = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(video_path),
+        "-vn", "-codec:a", "libmp3lame", "-b:a", "192k",
+        str(output_path),
+    ]
+    _run_ffmpeg(command, video_path.name)
+    video_path.unlink(missing_ok=True)
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        raise RuntimeError("FFmpeg finished without creating the Instagram audio.")
+    return output_path
+
+
+def _download_instagram_fallback_sync(
+    url: str,
+    output_path: Path,
+    audio_only: bool,
+) -> tuple[Path, dict]:
+    """Download Instagram media with instaloader when yt-dlp cannot."""
+    try:
+        from services.instagram_downloader import download_instagram
+    except ModuleNotFoundError as exc:
+        raise yt_dlp.utils.DownloadError(
+            "Instagram fallback requires the instaloader package."
+        ) from exc
+
+    downloaded = download_instagram(url, output_path)
+    if not downloaded:
+        raise yt_dlp.utils.DownloadError("Instagram fallback could not download media.")
+
+    info = _extract_instagram_info_sync(url)
+    if audio_only:
+        return _extract_audio_from_video(downloaded, output_path), info
+    return _normalise_video_for_telegram(downloaded), info
+
+
 def _download_sync(
     url: str,
     output_path: Path,
@@ -535,8 +613,14 @@ def _download_sync(
         ydl_opts["merge_output_format"] = "mp4"
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+        except yt_dlp.utils.DownloadError:
+            if _is_instagram_url(url):
+                logger.info("yt-dlp Instagram download failed; trying instaloader fallback.")
+                return _download_instagram_fallback_sync(url, output_path, audio_only)
+            raise
 
         # FFmpegExtractAudio should leave a final MP3. Do not pick the largest
         # file: for some YouTube downloads that can be the pre-conversion source.
