@@ -140,11 +140,6 @@ async def main() -> None:
     else:
         # ── Polling mode (local development) ─────────────────────────────
         logger.info("WEBHOOK_URL not set — starting in polling mode (local dev)")
-        await db.init_db()
-        try:
-            await _register_commands(bot)
-        except Exception as exc:
-            logger.warning("Could not register commands: %s", exc)
         try:
             await dp.start_polling(
                 bot,
