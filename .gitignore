@@ -2,6 +2,15 @@
 .env
 *.env
 
+# Credentials and session files
+cookies.txt
+**/cookies.txt
+instagram_cookies.txt
+**/instagram_cookies.txt
+*.session
+*.session-journal
+TELETHON_SESSION
+
 # Python
 __pycache__/
 *.py[cod]
