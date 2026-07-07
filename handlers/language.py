@@ -23,9 +23,9 @@ router = Router(name="language")
 
 def language_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="English 🇺🇸",  callback_data="setlang:en")
-    builder.button(text="العربية 🇵🇸",  callback_data="setlang:ar")
-    builder.button(text="Русский 🇷🇺",  callback_data="setlang:ru")
+    builder.button(text=t(None, "btn_english"), callback_data="setlang:en")
+    builder.button(text=t(None, "btn_arabic"), callback_data="setlang:ar")
+    builder.button(text=t(None, "btn_russian"), callback_data="setlang:ru")
     builder.adjust(1)
     return builder.as_markup()
 

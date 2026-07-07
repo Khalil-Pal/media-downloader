@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 from config.settings import settings
@@ -28,8 +29,13 @@ def setup_logging() -> None:
     ch.setFormatter(fmt)
     root.addHandler(ch)
 
-    # File handler (rotated daily via logrotate on the host)
-    fh = logging.FileHandler(log_dir / "sandy_squirrel.log", encoding="utf-8")
+    # File handler with app-managed daily rotation.
+    fh = TimedRotatingFileHandler(
+        log_dir / "sandy_squirrel.log",
+        when="midnight",
+        backupCount=14,
+        encoding="utf-8",
+    )
     fh.setFormatter(fmt)
     root.addHandler(fh)
 

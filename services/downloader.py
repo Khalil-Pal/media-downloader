@@ -345,7 +345,7 @@ def get_video_dimensions(video_path: Path) -> tuple[int | None, int | None]:
         width, height = int(width_text), int(height_text)
         if width > 0 and height > 0:
             return width, height
-    except (FileNotFoundError, ValueError, subprocess.CalledProcessError):
+    except (FileNotFoundError, OSError, ValueError, subprocess.CalledProcessError):
         logger.warning("Could not read video dimensions for %s", video_path.name)
     return None, None
 
@@ -379,7 +379,7 @@ def _probe_streams(video_path: Path) -> dict:
             text=True,
         )
         return json.loads(completed.stdout or "{}")
-    except (FileNotFoundError, subprocess.CalledProcessError, json.JSONDecodeError):
+    except (FileNotFoundError, OSError, subprocess.CalledProcessError, json.JSONDecodeError):
         return {}
 
 

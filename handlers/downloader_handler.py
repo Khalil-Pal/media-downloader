@@ -76,9 +76,9 @@ async def _run_download(message: Message, bot: Bot, url: str, quality: str = "be
         async def on_progress(msg_text: str) -> None:
             try:
                 await status_msg.edit_text(msg_text)
-            except Exception:
+            except Exception as exc:
                 # Telegram may reject an edit when the visible text did not change.
-                pass
+                logger.debug("Could not update download progress message: %s", exc)
 
         result = await download_media(
             url=url,
