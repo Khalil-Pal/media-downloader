@@ -26,6 +26,7 @@ from config.settings import settings
 from config.logging_config import setup_logging
 from handlers import main_router
 from services import db
+from services.telethon_uploader import close_client as close_telethon_client
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ async def on_startup(bot: Bot) -> None:
 
 
 async def on_shutdown(bot: Bot) -> None:
+    await close_telethon_client()
     await db.close_db()
     webhook_url = os.getenv("WEBHOOK_URL", "")
     if webhook_url:
@@ -146,6 +148,7 @@ async def main() -> None:
                 allowed_updates=dp.resolve_used_update_types(),
             )
         finally:
+            await close_telethon_client()
             await bot.session.close()
             await db.close_db()
             logger.info("Sandy Squirrel is going to sleep. Goodbye!")

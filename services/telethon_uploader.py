@@ -74,6 +74,21 @@ async def get_client():
     return _client
 
 
+async def close_client() -> None:
+    """Disconnect the cached Telethon client during graceful shutdown."""
+    global _client
+
+    if _client is None:
+        return
+
+    try:
+        if _client.is_connected():
+            await _client.disconnect()
+            logger.info("Telethon client disconnected.")
+    finally:
+        _client = None
+
+
 async def _resolve_chat(client, chat_id: int):
     """Resolve the MTProto peer for a user, group, or channel chat ID."""
     try:
