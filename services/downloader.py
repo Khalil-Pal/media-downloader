@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -40,8 +41,8 @@ logger = logging.getLogger(__name__)
 
 # ── Cookie helpers (fallback only — not needed for public videos) ─────────────
 
-def _get_cookies_file(url: str = "") -> str | None:
-    """Return an optional cookies file path.
+def _get_cookies_file(url: str = "") -> tuple[str | None, bool]:
+    """Return an optional cookies file path and whether it is temporary.
 
     Instagram keeps its existing cookie support. YouTube cookies are deliberately
     opt-in: an old cookies.txt copied into a cloud container can make every
@@ -57,10 +58,10 @@ def _get_cookies_file(url: str = "") -> str | None:
             )
             tmp.write(ig_cookies)
             tmp.close()
-            return tmp.name
+            return tmp.name, True
         if os.path.exists("instagram_cookies.txt"):
-            return "instagram_cookies.txt"
-        return None
+            return "instagram_cookies.txt", False
+        return None, False
 
     # Never silently use cookies.txt for YouTube. Set both variables in Railway
     # only when account access is genuinely required for a specific video.
@@ -72,9 +73,19 @@ def _get_cookies_file(url: str = "") -> str | None:
         )
         tmp.write(youtube_cookies)
         tmp.close()
-        return tmp.name
+        return tmp.name, True
 
-    return None
+    return None, False
+
+
+def _remove_temp_cookies_file(cookies_file: str | None, is_temporary: bool) -> None:
+    """Remove cookie files created from env vars after yt-dlp has used them."""
+    if not cookies_file or not is_temporary:
+        return
+    try:
+        Path(cookies_file).unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("Could not remove temporary cookies file: %s", exc)
 
 
 # ── YouTube extraction configuration ─────────────────────────────────────────
@@ -254,7 +265,7 @@ async def _safe_callback(callback: ProgressCallback, msg: str) -> None:
 
 def _extract_info_sync(url: str) -> dict:
     """Blocking metadata fetch — no download."""
-    cookies_file = _get_cookies_file(url)
+    cookies_file, temporary_cookies_file = _get_cookies_file(url)
     ydl_opts: dict = {
         "quiet": True,
         "no_warnings": True,
@@ -271,8 +282,11 @@ def _extract_info_sync(url: str) -> dict:
     if cookies_file:
         ydl_opts["cookiefile"] = cookies_file
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        return ydl.extract_info(url, download=False)
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            return ydl.extract_info(url, download=False)
+    finally:
+        _remove_temp_cookies_file(cookies_file, temporary_cookies_file)
 
 
 def get_video_dimensions(video_path: Path) -> tuple[int | None, int | None]:
@@ -483,7 +497,7 @@ def _download_sync(
     progress_hook: Callable[[dict], None],
 ) -> tuple[Path, dict]:
     """Blocking download — run inside a thread executor."""
-    cookies_file = _get_cookies_file(url)
+    cookies_file, temporary_cookies_file = _get_cookies_file(url)
     outtmpl = str(output_path / "media.%(ext)s")
 
     postprocessors = []
@@ -520,29 +534,32 @@ def _download_sync(
     if not audio_only:
         ydl_opts["merge_output_format"] = "mp4"
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
 
-    # FFmpegExtractAudio should leave a final MP3. Do not pick the largest
-    # file: for some YouTube downloads that can be the pre-conversion source.
-    if audio_only:
-        mp3_files = list(output_path.glob("*.mp3"))
-        if not mp3_files:
-            raise FileNotFoundError(
-                "Audio download completed, but FFmpeg did not create an MP3 file."
-            )
-        return max(mp3_files, key=lambda item: item.stat().st_mtime), info
+        # FFmpegExtractAudio should leave a final MP3. Do not pick the largest
+        # file: for some YouTube downloads that can be the pre-conversion source.
+        if audio_only:
+            mp3_files = list(output_path.glob("*.mp3"))
+            if not mp3_files:
+                raise FileNotFoundError(
+                    "Audio download completed, but FFmpeg did not create an MP3 file."
+                )
+            return max(mp3_files, key=lambda item: item.stat().st_mtime), info
 
-    # Only select complete media files, never .part fragments.
-    candidates = [
-        f for f in output_path.iterdir()
-        if f.is_file() and f.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}
-    ]
-    if not candidates:
-        raise FileNotFoundError("Download completed but output video was not found.")
+        # Only select complete media files, never .part fragments.
+        candidates = [
+            f for f in output_path.iterdir()
+            if f.is_file() and f.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}
+        ]
+        if not candidates:
+            raise FileNotFoundError("Download completed but output video was not found.")
 
-    found = max(candidates, key=lambda item: item.stat().st_size)
-    return _normalise_video_for_telegram(found), info
+        found = max(candidates, key=lambda item: item.stat().st_size)
+        return _normalise_video_for_telegram(found), info
+    finally:
+        _remove_temp_cookies_file(cookies_file, temporary_cookies_file)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -585,6 +602,7 @@ async def download_media(
     loop = asyncio.get_running_loop()
     session_dir = _make_session_dir()
     cancel_event = _cancel_flags.setdefault(user_id, asyncio.Event())
+    completed_file: Path | None = None
 
     format_str = (
         AUDIO_FORMAT if audio_only
@@ -611,6 +629,7 @@ async def download_media(
         actual_size = file_path.stat().st_size
         if actual_size > settings.max_file_size_bytes:
             file_path.unlink(missing_ok=True)
+            completed_file = None
             return DownloadResult(
                 success=False,
                 error=(
@@ -628,6 +647,7 @@ async def download_media(
             thumbnail_url=info.get("thumbnail"),
         )
 
+        completed_file = file_path
         return DownloadResult(success=True, file_path=file_path, info=media_info)
 
     except yt_dlp.utils.DownloadError as exc:
@@ -649,6 +669,8 @@ async def download_media(
 
     finally:
         cancel_event.clear()
+        if completed_file is None:
+            cleanup_session(session_dir)
 
 
 def cancel_download(user_id: int) -> bool:
@@ -659,15 +681,29 @@ def cancel_download(user_id: int) -> bool:
     return False
 
 
-def cleanup_session(file_path: Path | None) -> None:
-    if file_path and file_path.exists():
-        try:
-            parent = file_path.parent
-            file_path.unlink(missing_ok=True)
-            if parent != settings.download_path and not any(parent.iterdir()):
+def cleanup_session(path: Path | None) -> None:
+    if not path:
+        return
+
+    try:
+        download_root = settings.download_path.resolve()
+        target = path.resolve()
+
+        if target == download_root or download_root not in target.parents:
+            logger.warning("Refusing cleanup outside download directory: %s", path)
+            return
+
+        if path.is_dir():
+            shutil.rmtree(path)
+            return
+
+        if path.exists():
+            parent = path.parent
+            path.unlink(missing_ok=True)
+            if parent != settings.download_path and parent.exists() and not any(parent.iterdir()):
                 parent.rmdir()
-        except OSError as exc:
-            logger.warning("Cleanup failed: %s", exc)
+    except OSError as exc:
+        logger.warning("Cleanup failed: %s", exc)
 
 
 def _friendly_error(raw: str) -> str:
