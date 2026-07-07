@@ -304,7 +304,7 @@ def _extract_info_sync(url: str) -> dict:
         "extract_flat": False,
         "skip_download": True,
         "extractor_args": _get_extractor_args(url),
-        "nocheckcertificate": True,
+        "nocheckcertificate": False,
         **_get_runtime_options(url),
     }
     if _is_youtube_url(url):
