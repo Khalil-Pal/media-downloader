@@ -47,7 +47,7 @@ async def cb_set_language(callback: CallbackQuery) -> None:
         return
 
     user_id = callback.from_user.id
-    set_user_lang(user_id, lang)
+    await set_user_lang(user_id, lang)
 
     try:
         await callback.message.delete()  # type: ignore[union-attr]
