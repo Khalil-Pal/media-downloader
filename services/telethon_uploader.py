@@ -121,7 +121,7 @@ async def upload_large_file(
             entity,
             file=str(file_path),
             caption=caption,
-            parse_mode="md",
+            parse_mode="html",
             force_document=False,
             supports_streaming=not is_audio,
         )

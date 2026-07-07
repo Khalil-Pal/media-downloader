@@ -8,6 +8,7 @@ This file deliberately does not require Telegram's Local Bot API server.
 from __future__ import annotations
 
 import logging
+from html import escape
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
@@ -64,12 +65,13 @@ async def _run_download(message: Message, bot: Bot, url: str, quality: str = "be
         platform = detect_platform(url)
         mode = "Audio" if audio_only else quality.upper()
         preview = (
-            "*" + truncate(info.title, 80) + "*\n"
-            + info.uploader + "\n"
-            + info.duration + "\n"
-            + platform + "\n\nDownloading " + mode
+            f"<b>{escape(truncate(info.title, 80))}</b>\n"
+            f"{escape(info.uploader)}\n"
+            f"{escape(info.duration)}\n"
+            f"{escape(platform)}\n\n"
+            f"Downloading {escape(mode)}"
         )
-        await status_msg.edit_text(preview, parse_mode="Markdown")
+        await status_msg.edit_text(preview, parse_mode="HTML")
 
         async def on_progress(msg_text: str) -> None:
             try:
@@ -94,10 +96,10 @@ async def _run_download(message: Message, bot: Bot, url: str, quality: str = "be
         await status_msg.edit_text(t(lang, "uploading"))
 
         caption = (
-            "*" + truncate(result.info.title, 60) + "*\n"
-            + result.info.uploader + "  |  "
-            + result.info.duration + "  |  "
-            + result.info.file_size_str
+            f"<b>{escape(truncate(result.info.title, 60))}</b>\n"
+            f"{escape(result.info.uploader)}  |  "
+            f"{escape(result.info.duration)}  |  "
+            f"{escape(result.info.file_size_str)}"
         )
 
         actual_size = result.file_path.stat().st_size
@@ -121,7 +123,7 @@ async def _run_download(message: Message, bot: Bot, url: str, quality: str = "be
                         chat_id=message.chat.id,
                         audio=file_input,
                         caption=caption,
-                        parse_mode="Markdown",
+                        parse_mode="HTML",
                         title=result.info.title,
                         performer=result.info.uploader,
                     )
@@ -137,7 +139,7 @@ async def _run_download(message: Message, bot: Bot, url: str, quality: str = "be
                         chat_id=message.chat.id,
                         video=file_input,
                         caption=caption,
-                        parse_mode="Markdown",
+                        parse_mode="HTML",
                         supports_streaming=True,
                         **video_kwargs,
                     )
