@@ -3,7 +3,9 @@ utils/validators.py – URL validation and platform detection
 """
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
 from urllib.parse import urlparse
 
 # Platforms explicitly supported by yt-dlp that we advertise.
@@ -35,38 +37,58 @@ SUPPORTED_PLATFORMS: dict[str, re.Pattern[str]] = {
     ),
 }
 
-# Domains that are explicitly blocked regardless of content
-BLOCKED_DOMAINS: frozenset[str] = frozenset(
-    {
-        "localhost",
-        "127.0.0.1",
-        "0.0.0.0",
-        "10.",
-        "192.168.",
-        "169.254.",
-        # Known harmful / piracy sites can be added here
-    }
-)
+# Hostnames that should never be fetched directly.
+BLOCKED_HOSTNAMES: frozenset[str] = frozenset({"localhost"})
 
-_URL_RE = re.compile(
-    r"^https?://"
-    r"(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,}"
-    r"(?::\d+)?(?:/[^\s]*)?$",
-    re.IGNORECASE,
-)
+
+def _is_public_ip(raw_ip: str) -> bool:
+    """Return True only for globally routable IPv4/IPv6 addresses."""
+    try:
+        return ipaddress.ip_address(raw_ip).is_global
+    except ValueError:
+        return False
+
+
+def _host_resolves_publicly(host: str, port: int | None) -> bool:
+    """Reject hosts that resolve to private, loopback, link-local, or reserved IPs."""
+    normalized = host.rstrip(".").lower()
+    if not normalized or normalized in BLOCKED_HOSTNAMES:
+        return False
+
+    try:
+        return ipaddress.ip_address(normalized).is_global
+    except ValueError:
+        pass
+
+    try:
+        ascii_host = normalized.encode("idna").decode("ascii")
+        addresses = socket.getaddrinfo(
+            ascii_host,
+            port or 443,
+            type=socket.SOCK_STREAM,
+        )
+    except (OSError, UnicodeError):
+        return False
+
+    resolved_ips = {item[4][0] for item in addresses}
+    return bool(resolved_ips) and all(_is_public_ip(ip) for ip in resolved_ips)
 
 
 def is_valid_url(url: str) -> bool:
-    """Return True if *url* looks like a reachable HTTP/S URL."""
+    """Return True if *url* is HTTP/S and resolves only to public IPs."""
     url = url.strip()
-    if not _URL_RE.match(url):
-        return False
     parsed = urlparse(url)
-    host = parsed.hostname or ""
-    for blocked in BLOCKED_DOMAINS:
-        if host.startswith(blocked) or host == blocked:
-            return False
-    return True
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if not parsed.hostname:
+        return False
+    if parsed.username or parsed.password:
+        return False
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    return _host_resolves_publicly(parsed.hostname, port)
 
 
 def detect_platform(url: str) -> str:
