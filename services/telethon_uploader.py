@@ -106,6 +106,9 @@ async def upload_large_file(
     file_path: Path,
     caption: str,
     is_audio: bool = False,
+    width: int | None = None,
+    height: int | None = None,
+    duration: int | None = None,
 ) -> None:
     """Send a file through Telethon, authored by the bot account."""
     if not _telethon_configured():
@@ -124,6 +127,19 @@ async def upload_large_file(
 
     client = await get_client()
     entity = await _resolve_chat(client, chat_id)
+    attributes = None
+
+    if not is_audio and width and height:
+        from telethon.tl.types import DocumentAttributeVideo
+
+        attributes = [
+            DocumentAttributeVideo(
+                duration=duration or 0,
+                w=width,
+                h=height,
+                supports_streaming=True,
+            )
+        ]
 
     logger.info(
         "Starting Telethon BOT upload: %s (%.1f MB)",
@@ -139,6 +155,7 @@ async def upload_large_file(
             parse_mode="html",
             force_document=False,
             supports_streaming=not is_audio,
+            attributes=attributes,
         )
     except Exception:
         logger.exception("Telethon bot upload failed for %s", file_path.name)

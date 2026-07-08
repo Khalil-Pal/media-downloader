@@ -44,9 +44,7 @@ logger = logging.getLogger(__name__)
 def _get_cookies_file(url: str = "") -> tuple[str | None, bool]:
     """Return an optional cookies file path and whether it is temporary.
 
-    Instagram keeps its existing cookie support. YouTube cookies are deliberately
-    opt-in: an old cookies.txt copied into a cloud container can make every
-    request look suspicious and lead to HTTP 403 responses.
+    Old cookies may cause http 403 problem for YouTube. 
     """
     is_instagram = "instagram.com" in url.lower()
 
@@ -186,6 +184,7 @@ class MediaInfo:
     duration: str
     platform: str
     file_size_str: str
+    duration_seconds: int | None = None
     thumbnail_url: str | None = None
     formats: list[str] = field(default_factory=list)
 
@@ -202,6 +201,15 @@ ProgressCallback = Callable[[str], None]
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _duration_seconds(value: object) -> int | None:
+    """Return a positive integer duration from yt-dlp metadata, when present."""
+    try:
+        seconds = int(float(value))  # yt-dlp may return int, float, or string.
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
+
 
 def _make_session_dir() -> Path:
     session_dir = settings.download_path / str(uuid.uuid4())
@@ -671,6 +679,7 @@ async def fetch_info(url: str) -> MediaInfo:
         duration=format_duration(info.get("duration")),
         platform=info.get("extractor_key", "Unknown"),
         file_size_str=format_size(info.get("filesize") or info.get("filesize_approx")),
+        duration_seconds=_duration_seconds(info.get("duration")),
         thumbnail_url=info.get("thumbnail"),
         formats=formats[:6],
     )
@@ -728,6 +737,7 @@ async def download_media(
             duration=format_duration(info.get("duration")),
             platform=info.get("extractor_key", "Unknown"),
             file_size_str=format_size(actual_size),
+            duration_seconds=_duration_seconds(info.get("duration")),
             thumbnail_url=info.get("thumbnail"),
         )
 

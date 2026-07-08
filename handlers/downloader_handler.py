@@ -109,11 +109,27 @@ async def _run_download(message: Message, bot: Bot, url: str, quality: str = "be
                 # IMPORTANT: Telethon is authenticated with BOT_TOKEN in
                 # services/telethon_uploader.py. This sends from the bot,
                 # not from the owner's personal Telegram account.
+                width: int | None = None
+                height: int | None = None
+                duration: int | None = None
+
+                if not audio_only:
+                    width, height = get_video_dimensions(result.file_path)
+                    duration = result.info.duration_seconds if result.info else None
+                    if not width or not height:
+                        logger.debug(
+                            "Could not determine video dimensions for large upload: %s",
+                            result.file_path.name,
+                        )
+
                 await upload_large_file(
                     chat_id=message.chat.id,
                     file_path=result.file_path,
                     caption=caption,
                     is_audio=audio_only,
+                    width=width,
+                    height=height,
+                    duration=duration,
                 )
             else:
                 file_input = FSInputFile(result.file_path)
