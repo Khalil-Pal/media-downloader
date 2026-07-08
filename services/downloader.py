@@ -24,7 +24,6 @@ import logging
 import os
 import shutil
 import subprocess
-import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -42,36 +41,12 @@ logger = logging.getLogger(__name__)
 # ── Cookie helpers (fallback only — not needed for public videos) ─────────────
 
 def _get_cookies_file(url: str = "") -> tuple[str | None, bool]:
-    """Return an optional cookies file path and whether it is temporary.
+    """Return the platform cookie file path and whether it is temporary."""
+    if _is_youtube_url(url) and os.path.exists("cookies.txt"):
+        return "cookies.txt", False
 
-    Old cookies may cause http 403 problem for YouTube. 
-    """
-    is_instagram = "instagram.com" in url.lower()
-
-    if is_instagram:
-        ig_cookies = os.getenv("INSTAGRAM_COOKIES", "").strip()
-        if ig_cookies:
-            tmp = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".txt", delete=False, encoding="utf-8"
-            )
-            tmp.write(ig_cookies)
-            tmp.close()
-            return tmp.name, True
-        if os.path.exists("instagram_cookies.txt"):
-            return "instagram_cookies.txt", False
-        return None, False
-
-    # Never silently use cookies.txt for YouTube. Set both variables in Railway
-    # only when account access is genuinely required for a specific video.
-    use_youtube_cookies = os.getenv("USE_YOUTUBE_COOKIES", "false").lower() == "true"
-    youtube_cookies = os.getenv("YOUTUBE_COOKIES", "").strip()
-    if use_youtube_cookies and youtube_cookies:
-        tmp = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, encoding="utf-8"
-        )
-        tmp.write(youtube_cookies)
-        tmp.close()
-        return tmp.name, True
+    if _is_instagram_url(url) and os.path.exists("instagram_cookies.txt"):
+        return "instagram_cookies.txt", False
 
     return None, False
 

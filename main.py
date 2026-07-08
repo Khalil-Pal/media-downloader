@@ -8,6 +8,10 @@ Start with:  python main.py
 """
 from __future__ import annotations
 
+from bootstrap import bootstrap_cookie_files, log_cookie_bootstrap_status
+
+bootstrap_cookie_files()
+
 import asyncio
 import logging
 import os
@@ -30,6 +34,7 @@ from services.telethon_uploader import close_client as close_telethon_client
 
 setup_logging()
 logger = logging.getLogger(__name__)
+log_cookie_bootstrap_status(logger)
 
 _COMMANDS_EN = [
     BotCommand(command="start",     description="Start the bot"),
