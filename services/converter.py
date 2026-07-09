@@ -207,14 +207,22 @@ def _convert_image(input_path: Path, output_path: Path, target_format: str) -> N
 async def _convert_office_to_pdf(input_path: Path) -> Path:
     output_path = input_path.with_suffix(".pdf")
     output_path.unlink(missing_ok=True)
-    await _run_process(
-        [
-            "soffice", "--headless", "--convert-to", "pdf",
-            "--outdir", str(input_path.parent),
-            str(input_path),
-        ],
-        "LibreOffice",
-    )
+    profile_dir = input_path.parent / ("lo_profile_" + uuid.uuid4().hex)
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        await _run_process(
+            [
+                "soffice",
+                f"-env:UserInstallation={profile_dir.resolve().as_uri()}",
+                "--headless",
+                "--convert-to", "pdf",
+                "--outdir", str(input_path.parent),
+                str(input_path),
+            ],
+            "LibreOffice",
+        )
+    finally:
+        shutil.rmtree(profile_dir, ignore_errors=True)
     return output_path
 
 
@@ -235,4 +243,3 @@ def _convert_markdown_to_pdf(input_path: Path, output_path: Path) -> None:
         "</head><body>" + body + "</body></html>"
     )
     HTML(string=html, base_url=str(input_path.parent)).write_pdf(str(output_path))
-
