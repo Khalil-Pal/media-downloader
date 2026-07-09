@@ -1,16 +1,11 @@
 {
   "choose_language": "Choose your language / اختر لغتك / Выберите язык",
   "language_changed": "✅ تم تغيير اللغة إلى العربية!",
-
   "welcome": "🐿️ *مرحباً بك في Sandy Squirrel!*\n\nيمكنني تحميل الفيديوهات والصوت من YouTube وInstagram و*Threads* وFacebook ووTwitter/X وVimeo وReddit والمزيد.\n\n*كيفية الاستخدام:*\n• فقط الصق رابط الفيديو وسأقوم بتحميله لك\n• استخدم /download أو /audio متبوعاً بالرابط\n• اختر الجودة المفضلة عند الطلب\n\n*الأوامر:*\n/start — عرض هذه الرسالة\n/help — تعليمات مفصلة\n/download `<رابط>` — تحميل فيديو\n/audio `<رابط>` — تحميل صوت فقط\n/quality — خيارات الجودة المتاحة\n/cancel — إلغاء التحميل الحالي\n/language — تغيير اللغة\n\n*المنصات المدعومة:*\n▶️ YouTube  📸 Instagram  🧵 Threads\n👤 Facebook  🐦 Twitter/X\n🎬 Vimeo  🔗 Reddit  📅 Dailymotion\n\nجاهز للتحميل؟ أرسل لي رابطاً! 🚀",
-
   "help": "📖 *Sandy Squirrel – دليل المساعدة*\n\n*تحميل فيديو:*\nفقط الصق الرابط، أو استخدم:\n`/download https://youtube.com/watch?v=...`\n\n*مثال على Threads:*\n`/download https://www.threads.net/@user/post/ABC123`\n\n*تحميل الصوت فقط:*\n`/audio https://youtube.com/watch?v=...`\n\n*اختيار الجودة:*\nبعد إرسال الرابط ستحصل على خيارات الجودة:\n• 🥇 أفضل – أعلى جودة متاحة\n• 📺 720p – فيديو عالي الدقة\n• 📱 480p – جودة قياسية\n• 🔻 360p – نطاق ترددي منخفض\n• 🔍 144p – أدنى جودة\n• 🎵 صوت – صوت MP3 فقط\n\n*القيود:*\n• الحجم الأقصى: 2 جيجابايت (الملفات فوق 50 ميجابايت ترفع عبر Telethon)\n• المحتوى الخاص أو المقيد بالسن غير مدعوم\n• المحتوى المحظور جغرافياً قد لا يكون متاحاً\n\n*نصائح:*\n• لفيديوهات YouTube الكبيرة، جرب 360p أو الصوت فقط\n• Instagram Reels والقصص ومنشورات Threads مدعومة\n• استخدم /cancel إذا كان التحميل يستغرق وقتاً طويلاً\n\nتحتاج مزيداً من المساعدة؟ فقط أرسل رابطاً وسأتولى الأمر! 🐿️",
-
   "quality_options": "🎚 *خيارات الجودة المتاحة*\n\n• 🥇 *أفضل* – أعلى دقة متاحة + صوت\n• 📺 *720p* – عالي الدقة (موصى به لمعظم الحالات)\n• 📱 *480p* – جودة قياسية\n• 🔻 *360p* – نطاق ترددي منخفض\n• 🔍 *144p* – أدنى جودة\n• 🎵 *صوت* – صوت MP3 فقط (بدون فيديو)\n\nتظهر خيارات الجودة تلقائياً بعد إرسال الرابط.",
-
   "cancel_requested": "🛑 تم طلب الإلغاء. سيتوقف التحميل قريباً.",
   "no_active_download": "ℹ️ لا يوجد تحميل نشط لإلغائه.",
-
   "active_download_warning": "⚠️ لديك تحميل نشط بالفعل. استخدم /cancel لإيقافه أولاً.",
   "fetching_info": "🔍 جارٍ جلب معلومات الوسائط…",
   "uploading": "📤 جارٍ الرفع إلى Telegram…",
@@ -18,18 +13,15 @@
   "upload_failed": "❌ فشل الرفع: {error}\n\nقد يكون الملف كبيراً جداً أو انتهت مهلة Telegram.",
   "unexpected_error": "❌ خطأ غير متوقع: {error}",
   "info_error": "❌ تعذّر تحميل معلومات الوسائط:\n{error}",
-
   "download_usage": "📎 الاستخدام: `/download <رابط>`\n\nمثال:\n`/download https://youtu.be/dQw4w9WgXcQ`\n`/download https://www.threads.net/@user/post/ABC123`",
   "audio_usage": "🎵 الاستخدام: `/audio <رابط>`\n\nمثال:\n`/audio https://youtu.be/dQw4w9WgXcQ`",
   "invalid_url": "❌ رابط غير صالح. يرجى تقديم رابط فيديو صحيح.",
   "choose_quality": "🎚 اختر الجودة المفضلة لـ:\n`{url}`",
   "link_detected": "🔗 *تم اكتشاف رابط!*\n\n`{url}`\n\nاختر ما تريد فعله:",
-
   "invalid_selection": "❌ اختيار غير صالح.",
   "expired_url": "❌ الرابط لهذا الطلب انتهت صلاحيته أو غير صالح. يرجى إرسال الرابط مرة أخرى.",
   "download_cancelled": "🛑 تم إلغاء التحميل.",
   "cancelling": "جارٍ الإلغاء…",
-
   "btn_best": "🥇 أفضل",
   "btn_720p": "📺 720p",
   "btn_480p": "📱 480p",
@@ -39,5 +31,20 @@
   "btn_cancel": "❌ إلغاء",
   "btn_english": "English 🇺🇸",
   "btn_arabic": "العربية 🇵🇸",
-  "btn_russian": "Русский 🇷🇺"
+  "btn_russian": "Русский 🇷🇺",
+  "conversion_choose": "???? ???? ??????? ?????:\n{filename}",
+  "conversion_unsupported": "??? ????? ?? ??????? ??? ????? ??????? ?????.",
+  "conversion_expired": "????? ??? ???????. ???? ????? ??? ????.",
+  "conversion_wrong_user": "??? ??????? ??? ??? ??????? ???.",
+  "conversion_converting": "???? ????? ?????...",
+  "conversion_uploading": "???? ??? ????? ??????...",
+  "conversion_result_caption": "????? ??????: {filename}",
+  "conversion_too_large": "????? ???? ??? ???????. ???? ??????: {limit} ????????.",
+  "conversion_error_too_large": "????? ???? ??? ???????.",
+  "conversion_error_timeout": "?????? ??????? ???? ????? ??? ??????. ??? ???? ????.",
+  "conversion_error_unsupported": "??? ??????? ??? ????? ?????.",
+  "conversion_error_missing_tool": "???? ??????? ??? ????? ??? ??? ??????.",
+  "conversion_error_failed": "??? ???????. ??? ???? ???.",
+  "active_conversion_warning": "???? ????? ??? ??????. ????? ??? ?????.",
+  "btn_convert_to": "-> {format}"
 }
