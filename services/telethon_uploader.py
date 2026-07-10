@@ -109,6 +109,8 @@ async def upload_large_file(
     width: int | None = None,
     height: int | None = None,
     duration: int | None = None,
+    supports_streaming: bool | None = None,
+    force_document: bool = False,
 ) -> None:
     """Send a file through Telethon, authored by the bot account."""
     if not _telethon_configured():
@@ -128,8 +130,9 @@ async def upload_large_file(
     client = await get_client()
     entity = await _resolve_chat(client, chat_id)
     attributes = None
+    should_stream = (not is_audio) if supports_streaming is None else supports_streaming
 
-    if not is_audio and width and height:
+    if should_stream and width and height:
         from telethon.tl.types import DocumentAttributeVideo
 
         attributes = [
@@ -153,8 +156,8 @@ async def upload_large_file(
             file=str(file_path),
             caption=caption,
             parse_mode="html",
-            force_document=False,
-            supports_streaming=not is_audio,
+            force_document=force_document,
+            supports_streaming=should_stream,
             attributes=attributes,
         )
     except Exception:

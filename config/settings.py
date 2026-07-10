@@ -45,6 +45,9 @@ class Settings:
     # sends files up to 2 GB; the public cloud Bot API is limited to 50 MB.
     # Override with MAX_FILE_SIZE_MB in your .env if you need a lower cap.
     max_file_size_mb: int = field(default_factory=lambda: _int("MAX_FILE_SIZE_MB", 2000))
+    max_convert_file_size_mb: int = field(
+        default_factory=lambda: _int("MAX_CONVERT_FILE_SIZE_MB", 200)
+    )
     download_path: Path = field(
         default_factory=lambda: Path(os.getenv("DOWNLOAD_PATH", "./temp_downloads"))
     )
@@ -58,6 +61,9 @@ class Settings:
     max_concurrent_downloads: int = field(
         default_factory=lambda: _int("MAX_CONCURRENT_DOWNLOADS", 5)
     )
+    max_concurrent_conversions: int = field(
+        default_factory=lambda: _int("MAX_CONCURRENT_CONVERSIONS", 2)
+    )
 
     # ── Defaults ──────────────────────────────────────────────────────────
     default_quality: str = field(
@@ -70,6 +76,10 @@ class Settings:
     @property
     def max_file_size_bytes(self) -> int:
         return self.max_file_size_mb * 1024 * 1024
+
+    @property
+    def max_convert_file_size_bytes(self) -> int:
+        return self.max_convert_file_size_mb * 1024 * 1024
 
     def ensure_download_dir(self) -> None:
         self.download_path.mkdir(parents=True, exist_ok=True)

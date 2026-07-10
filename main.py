@@ -44,6 +44,7 @@ _COMMANDS_EN = [
     BotCommand(command="quality",   description="Quality options"),
     BotCommand(command="cancel",    description="Cancel current download"),
     BotCommand(command="language",  description="Change language"),
+    BotCommand(command="mode",      description="Switch bot mode"),
 ]
 _COMMANDS_AR = [
     BotCommand(command="start",     description="بدء البوت"),
@@ -53,6 +54,7 @@ _COMMANDS_AR = [
     BotCommand(command="quality",   description="خيارات الجودة"),
     BotCommand(command="cancel",    description="إلغاء التحميل الحالي"),
     BotCommand(command="language",  description="تغيير اللغة"),
+    BotCommand(command="mode",      description="تغيير وضع البوت"),
 ]
 _COMMANDS_RU = [
     BotCommand(command="start",     description="Запустить бота"),
@@ -62,6 +64,7 @@ _COMMANDS_RU = [
     BotCommand(command="quality",   description="Варианты качества"),
     BotCommand(command="cancel",    description="Отменить загрузку"),
     BotCommand(command="language",  description="Изменить язык"),
+    BotCommand(command="mode",      description="Сменить режим бота"),
 ]
 _COMMANDS_ADMIN = _COMMANDS_EN + [
     BotCommand(command="stats",      description="Bot statistics"),

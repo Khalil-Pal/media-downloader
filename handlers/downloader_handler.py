@@ -18,7 +18,7 @@ from handlers.common import quality_keyboard
 from services import cleanup_session, download_media, fetch_info, stats
 from services.downloader import get_video_dimensions
 from services.telethon_uploader import upload_large_file
-from services.user_store import get_user_lang_or_default, register_user
+from services.user_store import get_user_lang_or_default, get_user_mode_or_default, register_user
 from utils import (
     detect_platform,
     extract_url_from_text,
@@ -27,6 +27,7 @@ from utils import (
     truncate,
 )
 from utils.i18n import t
+from handlers.language import ensure_mode_selected
 
 logger = logging.getLogger(__name__)
 router = Router(name="downloader")
@@ -227,9 +228,17 @@ async def cmd_audio(message: Message, bot: Bot) -> None:
 async def handle_url_message(message: Message, bot: Bot) -> None:
     await register_user(message.from_user.id)  # type: ignore[union-attr]
     lang = await get_user_lang_or_default(message.from_user.id)  # type: ignore[union-attr]
+    if not await ensure_mode_selected(message, lang):
+        return
+
     url = extract_url_from_text(message.text or "")
 
     if not url or not is_valid_url(url):
+        return
+
+    mode = await get_user_mode_or_default(message.from_user.id)  # type: ignore[union-attr]
+    if mode == "converter":
+        await message.answer(t(lang, "mode_need_downloader"))
         return
 
     await message.answer(
