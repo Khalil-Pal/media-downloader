@@ -22,9 +22,10 @@ from services.converter import (
     supported_targets,
 )
 from services.telethon_uploader import upload_large_file
-from services.user_store import get_user_lang_or_default, register_user
+from services.user_store import get_user_lang_or_default, get_user_mode_or_default, register_user
 from utils import rate_limiter
 from utils.i18n import t
+from handlers.language import ensure_mode_selected
 
 logger = logging.getLogger(__name__)
 router = Router(name="converter")
@@ -102,19 +103,27 @@ async def handle_convertible_file(message: Message) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
     await register_user(user_id)
     lang = await get_user_lang_or_default(user_id)
+    if not await ensure_mode_selected(message, lang):
+        return
 
     payload = _file_payload(message)
     if not payload:
         return
 
     file_id, file_name, mime_type, file_size = payload
+    options = supported_targets(file_name, mime_type)
+
+    mode = await get_user_mode_or_default(user_id)
+    if mode == "downloader" and options:
+        await message.answer(t(lang, "mode_need_converter"))
+        return
+
     if file_size and file_size > settings.max_convert_file_size_bytes:
         await message.answer(
             t(lang, "conversion_too_large", limit=settings.max_convert_file_size_mb)
         )
         return
 
-    options = supported_targets(file_name, mime_type)
     if not options:
         await message.answer(t(lang, "conversion_unsupported"))
         return

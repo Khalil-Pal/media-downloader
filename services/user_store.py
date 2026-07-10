@@ -33,5 +33,17 @@ async def set_user_lang(user_id: int, lang: str) -> None:
     await db.set_user_lang(user_id, lang)
 
 
+async def get_user_mode(user_id: int) -> str | None:
+    return await db.get_user_mode(user_id)
+
+
+async def get_user_mode_or_default(user_id: int, default: str = "downloader") -> str:
+    return await db.get_user_mode_or_default(user_id, default)
+
+
+async def set_user_mode(user_id: int, mode: str) -> None:
+    await db.set_user_mode(user_id, mode)
+
+
 async def has_chosen_language(user_id: int) -> bool:
     return await db.has_chosen_language(user_id)

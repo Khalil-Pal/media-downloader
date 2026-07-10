@@ -8,7 +8,7 @@ Requires:  DATABASE_URL env var (Railway provides this automatically
            when you add a PostgreSQL plugin to your project).
 
 Tables created automatically on first run:
-  - users        (user_id, lang, created_at)
+  - users        (user_id, lang, mode, created_at)
   - stats        (id, total_downloads, failed_downloads, updated_at)
 """
 from __future__ import annotations
@@ -22,6 +22,9 @@ import asyncpg
 logger = logging.getLogger(__name__)
 
 _pool: asyncpg.Pool | None = None
+_memory_users: dict[int, dict[str, str | None]] = {}
+_memory_total_downloads = 0
+_memory_failed_downloads = 0
 
 
 async def init_db() -> None:
@@ -38,10 +41,14 @@ async def init_db() -> None:
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id   BIGINT PRIMARY KEY,
-                lang      TEXT    NOT NULL DEFAULT 'en',
+                lang      TEXT,
+                mode      TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
+        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS mode TEXT")
+        await conn.execute("ALTER TABLE users ALTER COLUMN lang DROP DEFAULT")
+        await conn.execute("ALTER TABLE users ALTER COLUMN lang DROP NOT NULL")
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS stats (
                 id                INTEGER PRIMARY KEY DEFAULT 1,
@@ -64,10 +71,15 @@ def _ready() -> bool:
     return _pool is not None
 
 
+def _memory_register_user(user_id: int) -> dict[str, str | None]:
+    return _memory_users.setdefault(user_id, {"lang": None, "mode": None})
+
+
 # ── User store ────────────────────────────────────────────────────────────────
 
 async def register_user(user_id: int) -> None:
     if not _ready():
+        _memory_register_user(user_id)
         return
     async with _pool.acquire() as conn:
         await conn.execute("""
@@ -78,6 +90,7 @@ async def register_user(user_id: int) -> None:
 
 async def set_user_lang(user_id: int, lang: str) -> None:
     if not _ready():
+        _memory_register_user(user_id)["lang"] = lang
         return
     async with _pool.acquire() as conn:
         await conn.execute("""
@@ -86,9 +99,23 @@ async def set_user_lang(user_id: int, lang: str) -> None:
         """, user_id, lang)
 
 
+async def set_user_mode(user_id: int, mode: str) -> None:
+    if mode not in {"downloader", "converter"}:
+        raise ValueError(f"Invalid user mode: {mode}")
+    if not _ready():
+        _memory_register_user(user_id)["mode"] = mode
+        return
+    async with _pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO users (user_id, mode) VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE SET mode = EXCLUDED.mode
+        """, user_id, mode)
+
+
 async def get_user_lang(user_id: int) -> str | None:
     if not _ready():
-        return None
+        user = _memory_users.get(user_id)
+        return user["lang"] if user else None
     async with _pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT lang FROM users WHERE user_id = $1", user_id
@@ -101,6 +128,22 @@ async def get_user_lang_or_default(user_id: int, default: str = "en") -> str:
     return lang if lang else default
 
 
+async def get_user_mode(user_id: int) -> str | None:
+    if not _ready():
+        user = _memory_users.get(user_id)
+        return user["mode"] if user else None
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT mode FROM users WHERE user_id = $1", user_id
+        )
+        return row["mode"] if row else None
+
+
+async def get_user_mode_or_default(user_id: int, default: str = "downloader") -> str:
+    mode = await get_user_mode(user_id)
+    return mode if mode else default
+
+
 async def has_chosen_language(user_id: int) -> bool:
     lang = await get_user_lang(user_id)
     return lang is not None
@@ -108,7 +151,7 @@ async def has_chosen_language(user_id: int) -> bool:
 
 async def get_all_user_ids() -> list[int]:
     if not _ready():
-        return []
+        return list(_memory_users)
     async with _pool.acquire() as conn:
         rows = await conn.fetch("SELECT user_id FROM users")
         return [r["user_id"] for r in rows]
@@ -116,7 +159,7 @@ async def get_all_user_ids() -> list[int]:
 
 async def user_count() -> int:
     if not _ready():
-        return 0
+        return len(_memory_users)
     async with _pool.acquire() as conn:
         return await conn.fetchval("SELECT COUNT(*) FROM users")
 
@@ -127,8 +170,10 @@ _start_time = time.time()
 
 
 async def record_success(user_id: int) -> None:
+    global _memory_total_downloads
     await register_user(user_id)
     if not _ready():
+        _memory_total_downloads += 1
         return
     async with _pool.acquire() as conn:
         await conn.execute("""
@@ -140,8 +185,10 @@ async def record_success(user_id: int) -> None:
 
 
 async def record_failure(user_id: int) -> None:
+    global _memory_failed_downloads
     await register_user(user_id)
     if not _ready():
+        _memory_failed_downloads += 1
         return
     async with _pool.acquire() as conn:
         await conn.execute("""
@@ -163,6 +210,9 @@ async def get_stats_snapshot() -> dict:
         "unique_users": 0,
     }
     if not _ready():
+        base["total_downloads"] = _memory_total_downloads
+        base["failed_downloads"] = _memory_failed_downloads
+        base["unique_users"] = len(_memory_users)
         return base
     async with _pool.acquire() as conn:
         row = await conn.fetchrow("SELECT total_downloads, failed_downloads FROM stats WHERE id = 1")

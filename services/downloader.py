@@ -1,20 +1,7 @@
 """
 services/downloader.py – Media download logic using yt-dlp.
-
 This module is the ONLY place that touches yt-dlp.
 Handlers must never call yt-dlp directly.
-
-FIX NOTES
-─────────
-YouTube can return HTTP 403 after metadata has loaded because YouTube may
-require a short-lived Proof-of-Origin (PO) token for Google Video Server
-requests. This file uses yt-dlp's recommended current approach:
-
-- use the `mweb` YouTube client;
-- load the external `bgutil-ytdlp-pot-provider` plugin;
-- point the plugin to its Deno-based generator installed by the Dockerfile.
-
-Instagram cookie handling is intentionally left unchanged.
 """
 from __future__ import annotations
 
