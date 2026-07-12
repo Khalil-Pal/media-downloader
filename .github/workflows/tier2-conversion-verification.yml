@@ -1,0 +1,270 @@
+name: Tier 2 conversion verification
+
+on:
+  push:
+    branches:
+      - "codex/tier2-verification-*"
+
+permissions:
+  contents: read
+
+jobs:
+  docker-libreoffice-verification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out Tier 2 branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Show Docker environment
+        shell: bash
+        run: |
+          set -o pipefail
+          echo "COMMAND: docker version"
+          docker version
+          echo "EXIT CODE: $?"
+
+      - name: Build Tier 1 baseline image
+        shell: bash
+        run: |
+          set -o pipefail
+          echo "COMMAND: git fetch origin converter"
+          git fetch origin converter
+          echo "EXIT CODE: $?"
+          echo "COMMAND: git worktree add /tmp/tier1 origin/converter"
+          git worktree add /tmp/tier1 origin/converter
+          echo "EXIT CODE: $?"
+          echo "COMMAND: docker build --progress=plain -t sandy-tier1:ci /tmp/tier1"
+          docker build --progress=plain -t sandy-tier1:ci /tmp/tier1 2>&1 | tee tier1-build.log
+          status=${PIPESTATUS[0]}
+          echo "EXIT CODE: ${status}"
+          exit "${status}"
+
+      - name: Build Tier 2 image
+        shell: bash
+        run: |
+          set -o pipefail
+          echo "COMMAND: docker build --progress=plain -t sandy-tier2:ci ."
+          docker build --progress=plain -t sandy-tier2:ci . 2>&1 | tee tier2-build.log
+          status=${PIPESTATUS[0]}
+          echo "EXIT CODE: ${status}"
+          exit "${status}"
+
+      - name: Report compressed and uncompressed image sizes
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "COMMAND: docker image inspect sandy-tier1:ci sandy-tier2:ci"
+          tier1_uncompressed=$(docker image inspect sandy-tier1:ci --format '{{.Size}}')
+          tier2_uncompressed=$(docker image inspect sandy-tier2:ci --format '{{.Size}}')
+          echo "tier1_uncompressed_bytes=${tier1_uncompressed}"
+          echo "tier2_uncompressed_bytes=${tier2_uncompressed}"
+          echo "uncompressed_delta_bytes=$((tier2_uncompressed - tier1_uncompressed))"
+          echo "EXIT CODE: $?"
+
+          echo "COMMAND: docker run -d -p 5000:5000 --name local-registry registry:2"
+          docker run -d -p 5000:5000 --name local-registry registry:2
+          echo "EXIT CODE: $?"
+
+          for image in sandy-tier1 sandy-tier2; do
+            echo "COMMAND: docker tag ${image}:ci localhost:5000/${image}:ci"
+            docker tag "${image}:ci" "localhost:5000/${image}:ci"
+            echo "EXIT CODE: $?"
+            echo "COMMAND: docker push localhost:5000/${image}:ci"
+            docker push "localhost:5000/${image}:ci"
+            echo "EXIT CODE: $?"
+          done
+
+          tier1_compressed=$(curl -fsSL -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+            http://localhost:5000/v2/sandy-tier1/manifests/ci | jq '[.layers[].size] | add')
+          tier2_compressed=$(curl -fsSL -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+            http://localhost:5000/v2/sandy-tier2/manifests/ci | jq '[.layers[].size] | add')
+          echo "tier1_registry_compressed_layer_bytes=${tier1_compressed}"
+          echo "tier2_registry_compressed_layer_bytes=${tier2_compressed}"
+          echo "compressed_delta_bytes=$((tier2_compressed - tier1_compressed))"
+
+      - name: Create container verification script
+        shell: bash
+        run: |
+          cat > tier2_verify.py <<'PY'
+          from __future__ import annotations
+
+          import asyncio
+          import shutil
+          import zipfile
+          from pathlib import Path
+          from urllib.parse import urlparse, unquote
+
+          import fitz
+          from docx import Document
+          from pptx import Presentation
+
+          import services.converter as converter
+          from config.settings import settings
+          from services.converter import cleanup_conversion_session, convert_file, create_conversion_session
+
+          profile_dirs_seen: list[Path] = []
+          original_run_process = converter._run_process
+
+          def list_dirs(path: Path) -> list[str]:
+              if not path.exists():
+                  return []
+              return sorted(p.name for p in path.iterdir() if p.is_dir())
+
+          def file_uri_to_path(uri: str) -> Path:
+              parsed = urlparse(uri)
+              return Path(unquote(parsed.path))
+
+          async def observed_run_process(command: list[str], tool_name: str, timeout: int = converter.CONVERSION_TIMEOUT_SECONDS) -> None:
+              profile_args = [arg for arg in command if arg.startswith("-env:UserInstallation=")]
+              if profile_args:
+                  profile_dir = file_uri_to_path(profile_args[0].split("=", 1)[1])
+                  profile_dirs_seen.append(profile_dir)
+                  print(f"DURING LibreOffice profile_dir={profile_dir}")
+                  print(f"DURING profile_exists_before_process={profile_dir.exists()}")
+                  print(f"DURING parent_listing={list_dirs(profile_dir.parent)}")
+              return await original_run_process(command, tool_name, timeout)
+
+          converter._run_process = observed_run_process
+
+          def make_simple_pdf(path: Path) -> None:
+              doc = fitz.open()
+              page = doc.new_page()
+              page.insert_text((72, 72), "Simple PDF for Sandy Squirrel Tier 2 verification.", fontsize=12)
+              page.insert_text((72, 96), "This file has extractable text and no unusual layout.", fontsize=12)
+              page.insert_text((72, 120), "LibreOffice should produce a readable output file.", fontsize=12)
+              doc.save(path)
+              doc.close()
+
+          def make_mixed_pdf(path: Path) -> None:
+              doc = fitz.open()
+              page = doc.new_page()
+              page.insert_text((72, 60), "Mixed PDF with two columns and a table", fontsize=14)
+              left = [
+                  "Left column line one with enough text.",
+                  "Left column line two for conversion.",
+                  "Left column line three for layout.",
+              ]
+              right = [
+                  "Right column line one with enough text.",
+                  "Right column line two for conversion.",
+                  "Right column line three for layout.",
+              ]
+              y = 95
+              for line in left:
+                  page.insert_text((72, y), line, fontsize=11)
+                  y += 20
+              y = 95
+              for line in right:
+                  page.insert_text((330, y), line, fontsize=11)
+                  y += 20
+              rows = [
+                  ("Item", "Count", "Status"),
+                  ("Acorns", "42", "Ready"),
+                  ("Maps", "7", "Packed"),
+                  ("Lanterns", "3", "Charged"),
+              ]
+              y = 190
+              for row in rows:
+                  for x, value in zip((72, 210, 330), row):
+                      page.insert_text((x, y), value, fontsize=11)
+                  y += 22
+              doc.save(path)
+              doc.close()
+
+          def validate_docx(path: Path) -> str:
+              doc = Document(str(path))
+              paragraph_count = len([p for p in doc.paragraphs if p.text.strip()])
+              return f"paragraph_count={paragraph_count} bytes={path.stat().st_size}"
+
+          def validate_pptx(path: Path) -> str:
+              Presentation(str(path))
+              with zipfile.ZipFile(path) as archive:
+                  slide_count = len([name for name in archive.namelist() if name.startswith("ppt/slides/slide")])
+              return f"slide_count={slide_count} bytes={path.stat().st_size}"
+
+          async def run_one(name: str, maker, source_name: str, target: str, validator) -> Path:
+              before = list_dirs(settings.download_path)
+              session = create_conversion_session()
+              print(f"TEST {name}: before_listing={before}")
+              print(f"TEST {name}: session={session}")
+              try:
+                  source = session / source_name
+                  maker(source)
+                  print(f"TEST {name}: command=await convert_file({source.name}, {target})")
+                  output = await convert_file(source, target, "application/pdf")
+                  print(f"TEST {name}: exit_code=0 output={output.name} {validator(output)}")
+                  return output
+              finally:
+                  cleanup_conversion_session(session)
+                  after = list_dirs(settings.download_path)
+                  print(f"TEST {name}: after_listing={after}")
+                  print(f"TEST {name}: cleaned={session.name not in after}")
+
+          async def run_concurrent(name: str, count: int, target: str) -> None:
+              sessions = [create_conversion_session() for _ in range(count)]
+              print(f"TEST {name}: before_listing={list_dirs(settings.download_path)}")
+              print(f"TEST {name}: sessions={[str(s) for s in sessions]}")
+              try:
+                  tasks = []
+                  for index, session in enumerate(sessions, start=1):
+                      source = session / f"concurrent_{index}.pdf"
+                      make_mixed_pdf(source)
+                      tasks.append(convert_file(source, target, "application/pdf"))
+                  print(f"TEST {name}: command=await asyncio.gather({count} convert_file(..., {target}) calls)")
+                  outputs = await asyncio.gather(*tasks)
+                  for output in outputs:
+                      detail = validate_docx(output) if target == "docx" else validate_pptx(output)
+                      print(f"TEST {name}: output={output} {detail}")
+                  print(f"TEST {name}: exit_code=0")
+              finally:
+                  during_after_process = []
+                  for session in sessions:
+                      during_after_process.append((str(session), list_dirs(session)))
+                  print(f"TEST {name}: session_listing_before_cleanup={during_after_process}")
+                  for session in sessions:
+                      cleanup_conversion_session(session)
+                  print(f"TEST {name}: after_listing={list_dirs(settings.download_path)}")
+                  print(f"TEST {name}: cleaned={all(session.name not in list_dirs(settings.download_path) for session in sessions)}")
+
+          async def main() -> None:
+              shutil.rmtree(settings.download_path, ignore_errors=True)
+              settings.download_path.mkdir(parents=True, exist_ok=True)
+              print(f"DOWNLOAD_PATH={settings.download_path}")
+              print(f"INITIAL_DOWNLOAD_PATH_LISTING={list_dirs(settings.download_path)}")
+              print(f"MAX_CONCURRENT_CONVERSIONS={settings.max_concurrent_conversions}")
+
+              await run_one("pdf_to_docx_simple", make_simple_pdf, "simple.pdf", "docx", validate_docx)
+              await run_one("pdf_to_docx_mixed", make_mixed_pdf, "mixed.pdf", "docx", validate_docx)
+              await run_one("pdf_to_pptx_simple", make_simple_pdf, "simple.pdf", "pptx", validate_pptx)
+              await run_one("pdf_to_pptx_mixed", make_mixed_pdf, "mixed.pdf", "pptx", validate_pptx)
+              await run_concurrent("libreoffice_concurrent_2_docx", 2, "docx")
+              if settings.max_concurrent_conversions > 1:
+                  await run_concurrent("libreoffice_concurrent_4_docx", 4, "docx")
+
+              unique_profiles = sorted({str(path) for path in profile_dirs_seen})
+              print(f"OBSERVED_PROFILE_DIRS={unique_profiles}")
+              print(f"OBSERVED_PROFILE_DIR_COUNT={len(unique_profiles)}")
+              print(f"PROFILE_DIRS_EXIST_AFTER_CLEANUP={[str(path) for path in profile_dirs_seen if path.exists()]}")
+              print(f"FINAL_DOWNLOAD_PATH_LISTING={list_dirs(settings.download_path)}")
+
+          asyncio.run(main())
+          PY
+
+      - name: Run real Tier 2 LibreOffice conversions inside image
+        shell: bash
+        run: |
+          set -o pipefail
+          echo "COMMAND: docker run --rm -e BOT_TOKEN=dummy -e DOWNLOAD_PATH=/tmp/sandy_verify_downloads -e MAX_CONCURRENT_CONVERSIONS=4 -v $PWD/tier2_verify.py:/tmp/tier2_verify.py:ro sandy-tier2:ci python /tmp/tier2_verify.py"
+          docker run --rm \
+            -e BOT_TOKEN=dummy \
+            -e DOWNLOAD_PATH=/tmp/sandy_verify_downloads \
+            -e MAX_CONCURRENT_CONVERSIONS=4 \
+            -v "$PWD/tier2_verify.py:/tmp/tier2_verify.py:ro" \
+            sandy-tier2:ci python /tmp/tier2_verify.py 2>&1 | tee tier2-container-tests.log
+          status=${PIPESTATUS[0]}
+          echo "EXIT CODE: ${status}"
+          exit "${status}"

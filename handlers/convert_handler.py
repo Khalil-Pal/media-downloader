@@ -20,6 +20,7 @@ from services.converter import (
     create_conversion_session,
     friendly_conversion_error,
     supported_targets,
+    tier2_caveat_key,
 )
 from services.telethon_uploader import upload_large_file
 from services.user_store import get_user_lang_or_default, get_user_mode_or_default, register_user
@@ -87,12 +88,12 @@ def _file_payload(message: Message) -> tuple[str, str, str | None, int | None] |
     return file_id, _safe_filename(file_name), mime_type, file_size
 
 
-def _conversion_keyboard(token: str, targets: tuple[str, ...], lang: str):
+def _conversion_keyboard(token: str, options, lang: str):
     builder = InlineKeyboardBuilder()
-    for target in targets:
+    for option in options:
         builder.button(
-            text=t(lang, "btn_convert_to", format=target.upper()),
-            callback_data=f"convert:{target}:{token}",
+            text=option.label or t(lang, "btn_convert_to", format=option.target_format.upper()),
+            callback_data=f"convert:{option.target_format}:{token}",
         )
     builder.adjust(2)
     return builder.as_markup()
@@ -142,7 +143,7 @@ async def handle_convertible_file(message: Message) -> None:
 
     await message.answer(
         t(lang, "conversion_choose", filename=file_name),
-        reply_markup=_conversion_keyboard(token, targets, lang),
+        reply_markup=_conversion_keyboard(token, options, lang),
     )
 
 
@@ -203,6 +204,9 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
             await status_msg.edit_text(t(lang, "conversion_uploading"))
 
         caption = t(lang, "conversion_result_caption", filename=output_path.name)
+        caveat_key = tier2_caveat_key(request.file_name, target_format, request.mime_type)
+        if caveat_key:
+            caption += "\n\n" + t(lang, caveat_key)
         if output_path.stat().st_size > SMALL_FILE_LIMIT:
             is_audio = output_path.suffix.lower() == ".mp3"
             await upload_large_file(
