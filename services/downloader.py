@@ -1,20 +1,7 @@
 """
 services/downloader.py – Media download logic using yt-dlp.
-
 This module is the ONLY place that touches yt-dlp.
 Handlers must never call yt-dlp directly.
-
-FIX NOTES
-─────────
-YouTube can return HTTP 403 after metadata has loaded because YouTube may
-require a short-lived Proof-of-Origin (PO) token for Google Video Server
-requests. This file uses yt-dlp's recommended current approach:
-
-- use the `mweb` YouTube client;
-- load the external `bgutil-ytdlp-pot-provider` plugin;
-- point the plugin to its Deno-based generator installed by the Dockerfile.
-
-Instagram cookie handling is intentionally left unchanged.
 """
 from __future__ import annotations
 
@@ -33,6 +20,7 @@ from typing import Callable
 import yt_dlp
 
 from config.settings import settings
+from services.cookie_files import get_instagram_cookies_file, get_youtube_cookies_file
 from utils.formatters import format_duration, format_size, progress_bar
 
 logger = logging.getLogger(__name__)
@@ -42,11 +30,11 @@ logger = logging.getLogger(__name__)
 
 def _get_cookies_file(url: str = "") -> tuple[str | None, bool]:
     """Return the platform cookie file path and whether it is temporary."""
-    if _is_youtube_url(url) and os.path.exists("cookies.txt"):
-        return "cookies.txt", False
+    if _is_youtube_url(url):
+        return get_youtube_cookies_file(), False
 
-    if _is_instagram_url(url) and os.path.exists("instagram_cookies.txt"):
-        return "instagram_cookies.txt", False
+    if _is_instagram_url(url):
+        return get_instagram_cookies_file(), False
 
     return None, False
 
@@ -254,13 +242,17 @@ async def _safe_callback(callback: ProgressCallback, msg: str) -> None:
 def _extract_instagram_info_sync(url: str) -> dict:
     """Blocking Instagram metadata fallback using instaloader."""
     try:
-        from services.instagram_downloader import fetch_instagram_info
+        from services.instagram_downloader import InstagramFallbackError, fetch_instagram_info
     except ModuleNotFoundError as exc:
         raise yt_dlp.utils.DownloadError(
             "Instagram fallback requires the instaloader package."
         ) from exc
 
-    info = fetch_instagram_info(url)
+    try:
+        info = fetch_instagram_info(url)
+    except InstagramFallbackError as exc:
+        raise yt_dlp.utils.DownloadError(str(exc)) from exc
+
     if not info:
         raise yt_dlp.utils.DownloadError("Instagram fallback could not fetch metadata.")
     if not info.get("is_video", True):
@@ -534,13 +526,17 @@ def _download_instagram_fallback_sync(
 ) -> tuple[Path, dict]:
     """Download Instagram media with instaloader when yt-dlp cannot."""
     try:
-        from services.instagram_downloader import download_instagram
+        from services.instagram_downloader import InstagramFallbackError, download_instagram
     except ModuleNotFoundError as exc:
         raise yt_dlp.utils.DownloadError(
             "Instagram fallback requires the instaloader package."
         ) from exc
 
-    downloaded = download_instagram(url, output_path)
+    try:
+        downloaded = download_instagram(url, output_path)
+    except InstagramFallbackError as exc:
+        raise yt_dlp.utils.DownloadError(str(exc)) from exc
+
     if not downloaded:
         raise yt_dlp.utils.DownloadError("Instagram fallback could not download media.")
 
@@ -777,6 +773,8 @@ def cleanup_session(path: Path | None) -> None:
 
 def _friendly_error(raw: str) -> str:
     lower = raw.lower()
+    if "rate-limiting" in lower or "too many requests" in lower:
+        return "❌ Instagram is temporarily rate-limiting requests. Try again later."
     if "private" in lower:
         return "❌ This content is private or requires login."
     if "geo" in lower or "not available in your country" in lower:
