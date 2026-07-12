@@ -30,6 +30,19 @@ LABEL description="Sandy Squirrel – Telegram media downloader bot"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    libreoffice-core \
+    libreoffice-common \
+    libreoffice-writer \
+    libreoffice-calc \
+    libreoffice-impress \
+    fonts-dejavu-core \
+    libcairo2 \
+    libffi8 \
+    libgdk-pixbuf-2.0-0 \
+    libglib2.0-0 \
+    libpango-1.0-0 \
+    libpangoft2-1.0-0 \
+    shared-mime-info \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -49,8 +62,6 @@ RUN mkdir -p temp_downloads logs data \
     && chown -R sandybot:sandybot /app /opt/bgutil-ytdlp-pot-provider
 
 USER sandybot
-
-RUN python setup_multilang.py
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

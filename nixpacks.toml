@@ -1,5 +1,17 @@
 [phases.setup]
-nixPkgs = ["python311", "ffmpeg"]
+nixPkgs = [
+  "python311",
+  "ffmpeg",
+  "libreoffice",
+  "cairo",
+  "pango",
+  "gdk-pixbuf",
+  "glib",
+  "libffi",
+  "shared-mime-info",
+  "fontconfig",
+  "dejavu_fonts",
+]
 
 [start]
 cmd = "python main.py"

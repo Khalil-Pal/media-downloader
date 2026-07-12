@@ -1,16 +1,11 @@
 {
   "choose_language": "Choose your language / اختر لغتك / Выберите язык",
   "language_changed": "✅ Language set to English!",
-
-  "welcome": "🐿️ *Welcome to Sandy Squirrel!*\n\nI can download videos and audio from YouTube, Instagram, *Threads*, Facebook, Twitter/X, Vimeo, Reddit, and more.\n\n*How to use me:*\n• Just paste a video URL and I'll download it for you\n• Use /download or /audio followed by a URL\n• Choose your preferred quality when prompted\n\n*Commands:*\n/start — Show this message\n/help — Detailed instructions\n/download `<url>` — Download video\n/audio `<url>` — Download audio only\n/quality — Supported quality options\n/cancel — Cancel current download\n/language — Change language\n\n*Supported platforms:*\n▶️ YouTube  📸 Instagram  🧵 Threads\n👤 Facebook  🐦 Twitter/X\n🎬 Vimeo  🔗 Reddit  📅 Dailymotion\n\nReady to download? Send me a link! 🚀",
-
-  "help": "📖 *Sandy Squirrel – Help Guide*\n\n*Downloading a video:*\nSimply paste a URL, or use:\n`/download https://youtube.com/watch?v=...`\n\n*Threads example:*\n`/download https://www.threads.net/@user/post/ABC123`\n\n*Downloading audio only:*\n`/audio https://youtube.com/watch?v=...`\n\n*Quality selection:*\nAfter sending a URL you'll get quality options:\n• 🥇 Best – Highest available quality\n• 📺 720p – HD video\n• 📱 480p – Standard definition\n• 🔻 360p – Low bandwidth\n• 🔍 144p – Minimum quality\n• 🎵 Audio – MP3 audio only\n\n*Limitations:*\n• Max file size: 2 GB (files over 50 MB upload via Telethon)\n• Private/age-restricted content is not supported\n• Geo-blocked content may not be available\n\n*Tips:*\n• For large YouTube videos, try 360p or audio-only\n• Instagram Reels, Stories, and Threads posts are supported\n• Use /cancel if a download is taking too long\n\nNeed more help? Just send a URL and I'll handle the rest! 🐿️",
-
+  "welcome": "🐿️ *Welcome to Sandy Squirrel!*\n\nI can download videos and audio from YouTube, Instagram, *Threads*, Facebook, Twitter/X, Vimeo, Reddit, and more.\nI can also convert files: audio/video -> MP3, PNG/JPG/WebP images, and DOCX/XLSX/PPTX/MD -> PDF.\n\n*How to use me:*\n• Just paste a video URL and I'll download it for you\n• Use /download or /audio followed by a URL\n• Choose your preferred quality when prompted\nTo convert anything you should send it as a document!\n\n*Commands:*\n/start — Show this message\n/help — Detailed instructions\n/download `<url>` — Download video\n/audio `<url>` — Download audio only\n/quality — Supported quality options\n/cancel — Cancel current download\n/language — Change language\n/mode — Switch Downloader/Converter mode\n\n*Supported platforms:*\n▶️ YouTube  📸 Instagram  🧵 Threads\n👤 Facebook  🐦 Twitter/X\n🎬 Vimeo  🔗 Reddit  📅 Dailymotion\n\nReady to download? Send me a link! 🚀",
+  "help": "📖 *Sandy Squirrel – Help Guide*\n\n*Downloading a video:*\nSimply paste a URL, or use:\n`/download https://youtube.com/watch?v=...`\n\n*Threads example:*\n`/download https://www.threads.net/@user/post/ABC123`\n\n*Downloading audio only:*\n`/audio https://youtube.com/watch?v=...`\n\n*File conversion:*\nSwitch to Converter mode with /mode and send a supported file.\n\n*Quality selection:*\nAfter sending a URL you'll get quality options:\n• 🥇 Best – Highest available quality\n• 📺 720p – HD video\n• 📱 480p – Standard definition\n• 🔻 360p – Low bandwidth\n• 🔍 144p – Minimum quality\n• 🎵 Audio – MP3 audio only\n\n*Limitations:*\n• Max file size: 2 GB (files over 50 MB upload via Telethon)\n• Private/age-restricted content is not supported\n• Geo-blocked content may not be available\n\n*Tips:*\n• For large YouTube videos, try 360p or audio-only\n• Instagram Reels, Stories, and Threads posts are supported\n• Use /cancel if a download is taking too long\n\nNeed more help? Just send a URL and I'll handle the rest! 🐿️",
   "quality_options": "🎚 *Available Quality Options*\n\n• 🥇 *Best* – Highest available resolution + audio\n• 📺 *720p* – HD (recommended for most use cases)\n• 📱 *480p* – Standard definition\n• 🔻 *360p* – Low bandwidth\n• 🔍 *144p* – Minimum quality\n• 🎵 *Audio* – MP3 audio only (no video)\n\nQuality options appear automatically after you send a URL.",
-
   "cancel_requested": "🛑 Cancellation requested. Your download will stop shortly.",
   "no_active_download": "ℹ️ No active download to cancel.",
-
   "active_download_warning": "⚠️ You already have an active download. Use /cancel to stop it first.",
   "fetching_info": "🔍 Fetching media info…",
   "uploading": "📤 Uploading to Telegram…",
@@ -18,18 +13,15 @@
   "upload_failed": "❌ Upload failed: {error}\n\nThe file may be too large or Telegram timed out.",
   "unexpected_error": "❌ Unexpected error: {error}",
   "info_error": "❌ Could not load media info:\n{error}",
-
   "download_usage": "📎 Usage: `/download <URL>`\n\nExample:\n`/download https://youtu.be/dQw4w9WgXcQ`\n`/download https://www.threads.net/@user/post/ABC123`",
   "audio_usage": "🎵 Usage: `/audio <URL>`\n\nExample:\n`/audio https://youtu.be/dQw4w9WgXcQ`",
   "invalid_url": "❌ Invalid URL. Please provide a valid video link.",
   "choose_quality": "🎚 Choose your preferred quality for:\n`{url}`",
   "link_detected": "🔗 *Link detected!*\n\n`{url}`\n\nChoose what you'd like to do:",
-
   "invalid_selection": "❌ Invalid selection.",
   "expired_url": "❌ The URL for this request has expired or is invalid. Please send the link again.",
   "download_cancelled": "🛑 Download cancelled.",
   "cancelling": "Cancelling…",
-
   "btn_best": "🥇 Best",
   "btn_720p": "📺 720p",
   "btn_480p": "📱 480p",
@@ -39,5 +31,35 @@
   "btn_cancel": "❌ Cancel",
   "btn_english": "English 🇺🇸",
   "btn_arabic": "العربية 🇵🇸",
-  "btn_russian": "Русский 🇷🇺"
+  "btn_russian": "Русский 🇷🇺",
+  "choose_mode": "Choose a mode:",
+  "mode_changed": "✅ Mode set to {mode}.",
+  "mode_name_downloader": "Downloader",
+  "mode_name_converter": "Converter",
+  "mode_current_suffix": "✓",
+  "mode_need_converter": "You're in Downloader mode. Use /mode and switch to Converter mode to convert files.",
+  "mode_need_downloader": "You're in Converter mode. Use /mode and switch to Downloader mode to download from links.",
+  "cmd_mode_description": "Switch bot mode",
+  "btn_mode_downloader": "📥 Downloader",
+  "btn_mode_converter": "🔄 Converter",
+  "conversion_choose": "Choose a target format for:\n{filename}",
+  "conversion_unsupported": "This file type is not supported for conversion yet.",
+  "conversion_expired": "This conversion request expired. Please send the file again.",
+  "conversion_wrong_user": "This conversion request belongs to another user.",
+  "conversion_converting": "Converting your file...",
+  "conversion_uploading": "Uploading converted file...",
+  "conversion_result_caption": "Converted file: {filename}",
+  "conversion_tier2_caveat": "⚠️ Complex formatting may not convert perfectly.",
+  "conversion_tier2_caveat_docx_pptx": "⚠️ This PowerPoint is rebuilt from document headings and paragraphs, so formatting and layout may not match the original.",
+  "conversion_too_large": "This file is too large for conversion. Max allowed: {limit} MB.",
+  "conversion_error_too_large": "This file is too large for conversion.",
+  "conversion_error_timeout": "Conversion took too long and was stopped. Try a smaller file.",
+  "conversion_error_unsupported": "This conversion is not supported yet.",
+  "conversion_error_missing_tool": "The conversion tool is not available on this server.",
+  "conversion_error_pdf_scanned": "This PDF appears to be scanned or image-based. OCR is not supported, so it can't be converted to this format.",
+  "conversion_error_pdf_no_tables": "No tables were found in this PDF, so it can't be converted to Excel.",
+  "conversion_error_pdf_text_failed": "Could not read text from this PDF. Please try a different file.",
+  "conversion_error_failed": "Conversion failed. Please try a different file.",
+  "active_conversion_warning": "You already have an active conversion. Please wait for it to finish.",
+  "btn_convert_to": "-> {format}"
 }
