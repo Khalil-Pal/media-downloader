@@ -12,7 +12,8 @@ from aiogram.types import Message
 from config.settings import settings
 from services import cancel_download, stats
 from services.user_store import get_user_lang_or_default, has_chosen_language, register_user
-from handlers.language import ensure_mode_selected, language_keyboard
+from handlers.language import language_keyboard
+from handlers.menu import show_main_menu
 from utils.i18n import t
 logger = logging.getLogger(__name__)
 router = Router(name="commands")
@@ -27,10 +28,7 @@ async def cmd_start(message: Message) -> None:
         return
 
     lang = await get_user_lang_or_default(user_id)
-    if not await ensure_mode_selected(message, lang):
-        return
-
-    await message.answer(t(lang, "welcome"), parse_mode="Markdown")
+    await show_main_menu(message, lang)
 
 
 @router.message(Command("help"))
