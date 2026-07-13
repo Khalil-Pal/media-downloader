@@ -53,7 +53,7 @@
   "plan_btn_ultra_pack": "Choose Ultra Pack",
   "btn_back_main_menu": "Back to Main Menu",
   "plan_payment_disabled": "Payments are not enabled yet. Please contact admin to activate this plan.",
-  "menu_about": "I can download videos and audio from YouTube, Instagram, **Threads**, Facebook, Twitter/X, Vimeo, Reddit, and more.\n\n**How to use me:**\n• Just paste a video URL and I'll download it for you\n• Use /download or /audio followed by a URL\n• Choose your preferred quality when prompted\n\ncommands:\n/start — main menu\n/help — help guide\n/download — download video\n/audio — audio only\n/quality — quality options\n/cancel — cancel download\n/language — change language\n/mode — switch mode\n\n**Supported platforms:**\n▶️ YouTube  📸 Instagram  🧵 Threads\n👤 Facebook  🐦 Twitter/X\n🎬 Vimeo  🔗 Reddit  📅 Dailymotion\n\nReady to download? Send me a link! 🚀",
+  "menu_about": "I can download videos and audio from YouTube, Instagram, Threads, Facebook, Twitter/X, Vimeo, Reddit, and more.\n\nHow to use me:\n• Just paste a video URL and I'll download it for you\n• Use /download or /audio followed by a URL\n• Choose your preferred quality when prompted\n\ncommands:\n/start — main menu\n/help — help guide\n/download — download video\n/audio — audio only\n/quality — quality options\n/cancel — cancel download\n/language — change language\n/mode — switch mode\n\nSupported platforms:\n▶️ YouTube  📸 Instagram  🧵 Threads\n👤 Facebook  🐦 Twitter/X\n🎬 Vimeo  🔗 Reddit  📅 Dailymotion\n\nReady to download? Send me a link! 🚀",
   "choose_mode": "Choose a mode:",
   "mode_changed": "✅ Mode set to {mode}.",
   "mode_name_downloader": "Downloader",

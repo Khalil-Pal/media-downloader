@@ -53,7 +53,7 @@
   "plan_btn_ultra_pack": "Выбрать Ultra Pack",
   "btn_back_main_menu": "Назад в главное меню",
   "plan_payment_disabled": "Платежи пока не включены. Пожалуйста, свяжитесь с администратором, чтобы активировать этот тариф.",
-  "menu_about": "Я могу скачивать видео и аудио с YouTube, Instagram, **Threads**, Facebook, Twitter/X, Vimeo, Reddit и других платформ.\n\n**Как пользоваться:**\n• Просто вставьте ссылку на видео, и я скачаю его для вас\n• Используйте /download или /audio с ссылкой\n• Выберите предпочтительное качество при запросе\n\nкоманды:\n/start — главное меню\n/help — помощь\n/download — скачать видео\n/audio — только аудио\n/quality — варианты качества\n/cancel — отменить загрузку\n/language — изменить язык\n/mode — сменить режим\n\n**Поддерживаемые платформы:**\n▶️ YouTube  📸 Instagram  🧵 Threads\n👤 Facebook  🐦 Twitter/X\n🎬 Vimeo  🔗 Reddit  📅 Dailymotion\n\nГотов скачивать? Пришлите мне ссылку! 🚀",
+  "menu_about": "Я могу скачивать видео и аудио с YouTube, Instagram, Threads, Facebook, Twitter/X, Vimeo, Reddit и других платформ.\n\nКак пользоваться:\n• Просто вставьте ссылку на видео, и я скачаю его для вас\n• Используйте /download или /audio с ссылкой\n• Выберите предпочтительное качество при запросе\n\nкоманды:\n/start — главное меню\n/help — помощь\n/download — скачать видео\n/audio — только аудио\n/quality — варианты качества\n/cancel — отменить загрузку\n/language — изменить язык\n/mode — сменить режим\n\nПоддерживаемые платформы:\n▶️ YouTube  📸 Instagram  🧵 Threads\n👤 Facebook  🐦 Twitter/X\n🎬 Vimeo  🔗 Reddit  📅 Dailymotion\n\nГотов скачивать? Пришлите мне ссылку! 🚀",
   "choose_mode": "Выберите режим:",
   "mode_changed": "✅ Режим установлен: {mode}.",
   "mode_name_downloader": "Загрузчик",
