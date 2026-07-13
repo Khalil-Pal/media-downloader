@@ -90,7 +90,7 @@
   "my_plan_remaining_unlimited_downloads": "تحميلات غير محدودة، بدون تحويلات",
   "my_plan_remaining_unlimited_conversions": "تحويلات غير محدودة، بدون تحميلات",
   "my_plan_remaining_none": "لا توجد استخدامات مدفوعة متبقية",
-  "menu_about": "يمكنني تحميل الفيديوهات والصوت من YouTube وInstagram وThreads وFacebook وTwitter/X وVimeo وReddit والمزيد.\n\nكيفية الاستخدام:\n• فقط الصق رابط فيديو وسأقوم بتحميله لك\n• استخدم /download أو /audio متبوعاً برابط\n• اختر الجودة المفضلة عند الطلب\n\nالأوامر:\n/start — القائمة الرئيسية\n/help — دليل المساعدة\n/download — تحميل فيديو\n/audio — صوت فقط\n/quality — خيارات الجودة\n/cancel — إلغاء التحميل\n/language — تغيير اللغة\n/mode — تبديل الوضع\n\nالمنصات المدعومة:\n▶️ YouTube  📸 Instagram  🧵 Threads\n👤 Facebook  🐦 Twitter/X\n🎬 Vimeo  🔗 Reddit  📅 Dailymotion\n\nجاهز للتحميل؟ أرسل لي رابطاً! 🚀",
+  "menu_about": "يمكنني تحميل الفيديوهات/الصوت وتحويل أنواع الملفات.\n\nكيفية الاستخدام:\n• فقط الصق رابط فيديو وسأقوم بتحميله لك\n• استخدم /download أو /audio متبوعاً برابط\n• اختر الجودة المفضلة عند الطلب\n• لتحويل أي شيء، أرسله كمستند.\n\nالأوامر:\n/start — القائمة الرئيسية\n/help — دليل المساعدة\n/download — تحميل فيديو\n/audio — صوت فقط\n/quality — خيارات الجودة\n/cancel — إلغاء التحميل\n/language — تغيير اللغة\n/mode — تبديل الوضع\n\nالمنصات المدعومة:\n▶️ YouTube  📸 Instagram  🧵 Threads\n👤 Facebook  🐦 Twitter/X\n🎬 Vimeo  🔗 Reddit  📅 Dailymotion\n\nالملفات المدعومة:\n🎵 الصوت / الفيديو → MP3\n📄 DOCX, XLSX, MD, PPTX → PDF\n🖼 PNG ↔ JPG ↔ WebP\n\nجاهز للتحميل أو التحويل؟ أرسل لي رابطاً أو مستنداً! 🚀",
   "choose_mode": "اختر وضع البوت:",
   "mode_changed": "✅ تم ضبط الوضع على {mode}.",
   "mode_name_downloader": "وضع التحميل",
