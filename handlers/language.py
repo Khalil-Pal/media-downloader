@@ -29,9 +29,9 @@ router = Router(name="language")
 
 def language_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text=t(None, "btn_english"), callback_data="setlang:en")
-    builder.button(text=t(None, "btn_arabic"), callback_data="setlang:ar")
-    builder.button(text=t(None, "btn_russian"), callback_data="setlang:ru")
+    builder.button(text=t(None, "btn_english"), callback_data="lang:en")
+    builder.button(text=t(None, "btn_arabic"), callback_data="lang:ar")
+    builder.button(text=t(None, "btn_russian"), callback_data="lang:ru")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -100,7 +100,7 @@ async def cmd_mode(message: Message) -> None:
     )
 
 
-@router.callback_query(F.data.startswith("setlang:"))
+@router.callback_query(F.data.regexp(r"^(setlang|lang):(en|ar|ru)$"))
 async def cb_set_language(callback: CallbackQuery) -> None:
     await callback.answer()
 
@@ -109,8 +109,9 @@ async def cb_set_language(callback: CallbackQuery) -> None:
         return
 
     user_id = callback.from_user.id
-    current_mode = await get_user_mode(user_id)
     await set_user_lang(user_id, lang)
+    if callback.message is None:
+        return
 
     try:
         await callback.message.delete()  # type: ignore[union-attr]
@@ -118,10 +119,9 @@ async def cb_set_language(callback: CallbackQuery) -> None:
         pass
 
     await callback.message.answer(t(lang, "language_changed"))
-    if current_mode is None:
-        await prompt_mode_selection(callback.message, lang, context="onboard")
-    else:
-        await callback.message.answer(t(lang, "welcome"), parse_mode="Markdown")
+    from handlers.menu import show_main_menu
+
+    await show_main_menu(callback.message, lang, user=callback.from_user)
 
 
 @router.callback_query(F.data.startswith("setmode:"))
