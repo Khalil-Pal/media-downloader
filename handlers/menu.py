@@ -33,6 +33,41 @@ def main_menu_keyboard(lang: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def plans_keyboard(lang: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=t(lang, "plan_btn_downloader_pro"),
+        callback_data="plan:downloader_pro",
+    )
+    builder.button(
+        text=t(lang, "plan_btn_converter_pro"),
+        callback_data="plan:converter_pro",
+    )
+    builder.button(
+        text=t(lang, "plan_btn_all_in_one"),
+        callback_data="plan:all_in_one",
+    )
+    builder.button(
+        text=t(lang, "plan_btn_annual"),
+        callback_data="plan:annual",
+    )
+    builder.button(
+        text=t(lang, "plan_btn_starter_pack"),
+        callback_data="plan:starter_pack",
+    )
+    builder.button(
+        text=t(lang, "plan_btn_pro_pack"),
+        callback_data="plan:pro_pack",
+    )
+    builder.button(
+        text=t(lang, "plan_btn_ultra_pack"),
+        callback_data="plan:ultra_pack",
+    )
+    builder.button(text=t(lang, "btn_back_main_menu"), callback_data="menu:back")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def _menu_photo_path() -> Path | None:
     return next((path for path in MENU_PHOTO_CANDIDATES if path.is_file()), None)
 
@@ -79,6 +114,10 @@ async def cb_main_menu(callback: CallbackQuery) -> None:
     user_id = callback.from_user.id
     lang = await get_user_lang_or_default(user_id)
 
+    if action == "back":
+        await show_main_menu(callback.message, lang, user=callback.from_user)
+        return
+
     if action == "download":
         await set_user_mode(user_id, "downloader")
         await callback.message.answer(t(lang, "menu_download_instruction"))
@@ -90,7 +129,10 @@ async def cb_main_menu(callback: CallbackQuery) -> None:
         return
 
     if action == "plans":
-        await callback.message.answer(t(lang, "menu_plans"))
+        await callback.message.answer(
+            t(lang, "menu_plans"),
+            reply_markup=plans_keyboard(lang),
+        )
         return
 
     if action == "my_plan":
@@ -98,7 +140,7 @@ async def cb_main_menu(callback: CallbackQuery) -> None:
         return
 
     if action == "about":
-        await callback.message.answer(t(lang, "menu_about"))
+        await callback.message.answer(t(lang, "menu_about"), parse_mode=None)
         return
 
     if action == "language":
@@ -108,3 +150,14 @@ async def cb_main_menu(callback: CallbackQuery) -> None:
             t(None, "choose_language"),
             reply_markup=language_keyboard(),
         )
+
+
+@router.callback_query(F.data.startswith("plan:"))
+async def cb_plan_choice(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+    if callback.message is None:
+        return
+
+    lang = await get_user_lang_or_default(callback.from_user.id)
+    await callback.message.answer(t(lang, "plan_payment_disabled"))
