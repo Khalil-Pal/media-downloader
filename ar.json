@@ -53,7 +53,7 @@
   "plan_btn_ultra_pack": "اختر Ultra Pack",
   "btn_back_main_menu": "العودة إلى القائمة الرئيسية",
   "plan_payment_disabled": "الدفع غير مفعّل حالياً. يرجى التواصل مع المسؤول لتفعيل هذه الخطة.",
-  "menu_about": "يمكنني تحميل الفيديوهات والصوت من YouTube وInstagram و**Threads** وFacebook وTwitter/X وVimeo وReddit والمزيد.\n\n**كيفية الاستخدام:**\n• فقط الصق رابط فيديو وسأقوم بتحميله لك\n• استخدم /download أو /audio متبوعاً برابط\n• اختر الجودة المفضلة عند الطلب\n\nالأوامر:\n/start — القائمة الرئيسية\n/help — دليل المساعدة\n/download — تحميل فيديو\n/audio — صوت فقط\n/quality — خيارات الجودة\n/cancel — إلغاء التحميل\n/language — تغيير اللغة\n/mode — تبديل الوضع\n\n**المنصات المدعومة:**\n▶️ YouTube  📸 Instagram  🧵 Threads\n👤 Facebook  🐦 Twitter/X\n🎬 Vimeo  🔗 Reddit  📅 Dailymotion\n\nجاهز للتحميل؟ أرسل لي رابطاً! 🚀",
+  "menu_about": "يمكنني تحميل الفيديوهات والصوت من YouTube وInstagram وThreads وFacebook وTwitter/X وVimeo وReddit والمزيد.\n\nكيفية الاستخدام:\n• فقط الصق رابط فيديو وسأقوم بتحميله لك\n• استخدم /download أو /audio متبوعاً برابط\n• اختر الجودة المفضلة عند الطلب\n\nالأوامر:\n/start — القائمة الرئيسية\n/help — دليل المساعدة\n/download — تحميل فيديو\n/audio — صوت فقط\n/quality — خيارات الجودة\n/cancel — إلغاء التحميل\n/language — تغيير اللغة\n/mode — تبديل الوضع\n\nالمنصات المدعومة:\n▶️ YouTube  📸 Instagram  🧵 Threads\n👤 Facebook  🐦 Twitter/X\n🎬 Vimeo  🔗 Reddit  📅 Dailymotion\n\nجاهز للتحميل؟ أرسل لي رابطاً! 🚀",
   "choose_mode": "اختر وضع البوت:",
   "mode_changed": "✅ تم ضبط الوضع على {mode}.",
   "mode_name_downloader": "وضع التحميل",
