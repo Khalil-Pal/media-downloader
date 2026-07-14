@@ -34,6 +34,15 @@ class Settings:
     api_id: int = field(default_factory=lambda: _int("API_ID", 0))
     api_hash: str = field(default_factory=lambda: os.getenv("API_HASH", ""))
     phone: str = field(default_factory=lambda: os.getenv("PHONE", ""))
+    payment_usd_details: str = field(
+        default_factory=lambda: os.getenv("PAYMENT_USD_DETAILS", "").strip()
+    )
+    payment_ils_details: str = field(
+        default_factory=lambda: os.getenv("PAYMENT_ILS_DETAILS", "").strip()
+    )
+    payment_rub_details: str = field(
+        default_factory=lambda: os.getenv("PAYMENT_RUB_DETAILS", "").strip()
+    )
     # Set only when using Telegram's self-hosted Local Bot API server.
     # That server is required for bot-originated uploads above 50 MB.
     local_bot_api_url: str = field(
@@ -83,6 +92,13 @@ class Settings:
 
     def ensure_download_dir(self) -> None:
         self.download_path.mkdir(parents=True, exist_ok=True)
+
+    def payment_details_for(self, currency: str) -> str:
+        return {
+            "USD": self.payment_usd_details,
+            "ILS": self.payment_ils_details,
+            "RUB": self.payment_rub_details,
+        }.get(currency, "")
 
 
 # Singleton – import this everywhere
