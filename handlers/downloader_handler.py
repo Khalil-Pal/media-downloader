@@ -18,7 +18,7 @@ from handlers.common import quality_keyboard
 from services import cleanup_session, download_media, fetch_info, stats
 from services.downloader import get_video_dimensions
 from services.telethon_uploader import upload_large_file
-from services.user_store import get_user_lang_or_default, get_user_mode_or_default, register_user
+from services.user_store import get_user_lang_or_default, get_user_mode_or_default
 from utils import (
     detect_platform,
     extract_url_from_text,
@@ -183,7 +183,6 @@ async def _run_download(message: Message, bot: Bot, url: str, quality: str = "be
 @router.message(Command("download"))
 async def cmd_download(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
-    await register_user(user_id)
     lang = await get_user_lang_or_default(user_id)
     text = message.text or ""
     parts = text.split(maxsplit=1)
@@ -207,7 +206,6 @@ async def cmd_download(message: Message, bot: Bot) -> None:
 @router.message(Command("audio"))
 async def cmd_audio(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
-    await register_user(user_id)
     lang = await get_user_lang_or_default(user_id)
     text = message.text or ""
     parts = text.split(maxsplit=1)
@@ -226,7 +224,6 @@ async def cmd_audio(message: Message, bot: Bot) -> None:
 
 @router.message(F.text & F.text.regexp(r"https?://\S+"))
 async def handle_url_message(message: Message, bot: Bot) -> None:
-    await register_user(message.from_user.id)  # type: ignore[union-attr]
     lang = await get_user_lang_or_default(message.from_user.id)  # type: ignore[union-attr]
     if not await ensure_mode_selected(message, lang):
         return

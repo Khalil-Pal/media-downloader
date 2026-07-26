@@ -43,6 +43,18 @@ class Settings:
     payment_rub_details: str = field(
         default_factory=lambda: os.getenv("PAYMENT_RUB_DETAILS", "").strip()
     )
+    payment_info_rub: str = field(
+        default_factory=lambda: os.getenv("PAYMENT_INFO_RUB", "").strip()
+    )
+    payment_info_usd: str = field(
+        default_factory=lambda: os.getenv("PAYMENT_INFO_USD", "").strip()
+    )
+    payment_info_ils: str = field(
+        default_factory=lambda: os.getenv("PAYMENT_INFO_ILS", "").strip()
+    )
+    payment_review_eta: str = field(
+        default_factory=lambda: os.getenv("PAYMENT_REVIEW_ETA", "within 24 hours").strip()
+    )
     # Set only when using Telegram's self-hosted Local Bot API server.
     # That server is required for bot-originated uploads above 50 MB.
     local_bot_api_url: str = field(
@@ -98,6 +110,13 @@ class Settings:
             "USD": self.payment_usd_details,
             "ILS": self.payment_ils_details,
             "RUB": self.payment_rub_details,
+        }.get(currency, "")
+
+    def upgrade_payment_info_for(self, currency: str) -> str:
+        return {
+            "RUB": self.payment_info_rub,
+            "USD": self.payment_info_usd,
+            "ILS": self.payment_info_ils,
         }.get(currency, "")
 
 

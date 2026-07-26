@@ -23,7 +23,7 @@ from services.converter import (
     tier2_caveat_key,
 )
 from services.telethon_uploader import upload_large_file
-from services.user_store import get_user_lang_or_default, get_user_mode_or_default, register_user
+from services.user_store import get_user_lang_or_default, get_user_mode_or_default
 from utils import rate_limiter
 from utils.i18n import t
 from handlers.language import ensure_mode_selected
@@ -102,7 +102,6 @@ def _conversion_keyboard(token: str, options, lang: str):
 @router.message(F.document | F.video | F.audio)
 async def handle_convertible_file(message: Message) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
-    await register_user(user_id)
     lang = await get_user_lang_or_default(user_id)
     if not await ensure_mode_selected(message, lang):
         return
