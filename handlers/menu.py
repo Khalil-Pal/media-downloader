@@ -55,31 +55,31 @@ def plans_keyboard(lang: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(
         text=t(lang, "plan_btn_downloader_pro"),
-        callback_data="plan:choose:downloader_pro",
+        callback_data="upgrade:plan:downloader_pro",
     )
     builder.button(
         text=t(lang, "plan_btn_converter_pro"),
-        callback_data="plan:choose:converter_pro",
+        callback_data="upgrade:plan:converter_pro",
     )
     builder.button(
         text=t(lang, "plan_btn_all_in_one"),
-        callback_data="plan:choose:all_in_one",
+        callback_data="upgrade:plan:all_in_one",
     )
     builder.button(
         text=t(lang, "plan_btn_annual"),
-        callback_data="plan:choose:annual",
+        callback_data="upgrade:plan:annual",
     )
     builder.button(
         text=t(lang, "plan_btn_starter_pack"),
-        callback_data="plan:choose:starter_pack",
+        callback_data="upgrade:plan:starter_pack",
     )
     builder.button(
         text=t(lang, "plan_btn_pro_pack"),
-        callback_data="plan:choose:pro_pack",
+        callback_data="upgrade:plan:pro_pack",
     )
     builder.button(
         text=t(lang, "plan_btn_ultra_pack"),
-        callback_data="plan:choose:ultra_pack",
+        callback_data="upgrade:plan:ultra_pack",
     )
     builder.button(text=t(lang, "btn_back_main_menu"), callback_data="menu:main")
     builder.adjust(1)
@@ -180,7 +180,7 @@ def _pending_payment_text(lang: str, payment: dict) -> str:
 
 
 async def _my_plan_text(user_id: int, lang: str) -> str:
-    plan_row = await db.get_user_plan(user_id)
+    plan_row = await db.get_user_plan_details(user_id)
     if not plan_row:
         return t(
             lang,

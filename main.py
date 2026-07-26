@@ -29,6 +29,7 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 from config.settings import settings
 from config.logging_config import setup_logging
 from handlers import main_router
+from middlewares import UserProfileMiddleware
 from services import db
 from services.telethon_uploader import close_client as close_telethon_client
 
@@ -45,6 +46,7 @@ _COMMANDS_EN = [
     BotCommand(command="cancel",    description="Cancel current download"),
     BotCommand(command="language",  description="Change language"),
     BotCommand(command="mode",      description="Switch bot mode"),
+    BotCommand(command="upgrade",   description="Upgrade your plan"),
 ]
 _COMMANDS_AR = [
     BotCommand(command="start",     description="بدء البوت"),
@@ -55,6 +57,7 @@ _COMMANDS_AR = [
     BotCommand(command="cancel",    description="إلغاء التحميل الحالي"),
     BotCommand(command="language",  description="تغيير اللغة"),
     BotCommand(command="mode",      description="تغيير وضع البوت"),
+    BotCommand(command="upgrade",   description="ترقية خطتك"),
 ]
 _COMMANDS_RU = [
     BotCommand(command="start",     description="Запустить бота"),
@@ -65,6 +68,7 @@ _COMMANDS_RU = [
     BotCommand(command="cancel",    description="Отменить загрузку"),
     BotCommand(command="language",  description="Изменить язык"),
     BotCommand(command="mode",      description="Сменить режим бота"),
+    BotCommand(command="upgrade",   description="Улучшить тариф"),
 ]
 _COMMANDS_ADMIN = _COMMANDS_EN + [
     BotCommand(command="stats",      description="Bot statistics"),
@@ -124,6 +128,9 @@ async def main() -> None:
     )
 
     dp = Dispatcher(storage=MemoryStorage())
+    profile_middleware = UserProfileMiddleware()
+    dp.message.outer_middleware(profile_middleware)
+    dp.callback_query.outer_middleware(profile_middleware)
     dp.include_router(main_router)
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
