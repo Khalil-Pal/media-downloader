@@ -13,6 +13,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config.settings import settings
 from services import db
+from services.payments import (
+    PAYMENT_PROOF_WINDOW_MINUTES,
+    payment_proof_request_is_active,
+)
 from services.plans import SUPPORTED_CURRENCIES, get_plan, get_plan_amount
 from services.user_store import get_user_lang_or_default, set_user_mode
 from utils.i18n import t
@@ -33,10 +37,13 @@ CURRENCY_BUTTONS = {
 
 class PendingPaymentReceiptFilter(BaseFilter):
     async def __call__(self, message: Message) -> bool:
-        if message.from_user is None:
+        if message.from_user is None or not (message.photo or message.document):
             return False
         pending = await db.get_pending_payment_waiting_for_receipt(message.from_user.id)
-        return pending is not None
+        return bool(
+            pending
+            and payment_proof_request_is_active(pending.get("proof_requested_at"))
+        )
 
 
 def main_menu_keyboard(lang: str) -> InlineKeyboardMarkup:
@@ -103,6 +110,15 @@ def admin_payment_keyboard(payment_id: int) -> InlineKeyboardMarkup:
     builder.button(text=t("en", "admin_btn_approve"), callback_data=f"pay:approve:{payment_id}")
     builder.button(text=t("en", "admin_btn_reject"), callback_data=f"pay:reject:{payment_id}")
     builder.adjust(2)
+    return builder.as_markup()
+
+
+def payment_receipt_keyboard(lang: str, payment_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=t(lang, "payment_btn_send_receipt"),
+        callback_data=f"pay:send_proof:{payment_id}",
+    )
     return builder.as_markup()
 
 
@@ -359,7 +375,11 @@ async def cb_plan_choice(callback: CallbackQuery) -> None:
 
     pending = await db.get_pending_payment_for_user(user_id)
     if pending:
-        await callback.message.answer(_pending_payment_text(lang, pending), parse_mode=None)
+        await callback.message.answer(
+            _pending_payment_text(lang, pending),
+            reply_markup=payment_receipt_keyboard(lang, pending["id"]),
+            parse_mode=None,
+        )
         return
 
     plan = get_plan(plan_key)
@@ -391,7 +411,11 @@ async def cb_payment_currency(callback: CallbackQuery) -> None:
     _, _, plan_key, currency = parts
     pending = await db.get_pending_payment_for_user(user_id)
     if pending:
-        await callback.message.answer(_pending_payment_text(lang, pending), parse_mode=None)
+        await callback.message.answer(
+            _pending_payment_text(lang, pending),
+            reply_markup=payment_receipt_keyboard(lang, pending["id"]),
+            parse_mode=None,
+        )
         return
 
     plan = get_plan(plan_key)
@@ -414,6 +438,31 @@ async def cb_payment_currency(callback: CallbackQuery) -> None:
     )
     await callback.message.answer(
         _payment_instruction_text(lang, payment, details),
+        reply_markup=payment_receipt_keyboard(lang, payment["id"]),
+        parse_mode=None,
+    )
+
+
+@router.callback_query(F.data.regexp(r"^pay:send_proof:\d+$"))
+async def cb_request_payment_receipt(callback: CallbackQuery) -> None:
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    user_id = callback.from_user.id
+    lang = await get_user_lang_or_default(user_id)
+    payment_id = int((callback.data or "").rsplit(":", 1)[1])
+    payment = await db.request_payment_receipt(payment_id, user_id)
+    if payment is None:
+        await callback.message.answer(t(lang, "payment_not_found"), parse_mode=None)
+        return
+
+    await callback.message.answer(
+        t(
+            lang,
+            "payment_send_receipt_prompt",
+            minutes=PAYMENT_PROOF_WINDOW_MINUTES,
+        ),
         parse_mode=None,
     )
 
@@ -426,7 +475,9 @@ async def msg_payment_receipt(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id
     lang = await get_user_lang_or_default(user_id)
     pending = await db.get_pending_payment_waiting_for_receipt(user_id)
-    if pending is None:
+    if pending is None or not payment_proof_request_is_active(
+        pending.get("proof_requested_at")
+    ):
         return
 
     receipt_file_id = None

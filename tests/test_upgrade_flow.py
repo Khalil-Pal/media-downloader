@@ -12,16 +12,24 @@ from unittest.mock import AsyncMock, patch
 os.environ.setdefault("BOT_TOKEN", "123456:test-token")
 
 from config.settings import settings
+from handlers.convert_handler import _conversion_store, handle_convertible_file
+from handlers.menu import (
+    PendingPaymentReceiptFilter,
+    cb_request_payment_receipt,
+    payment_receipt_keyboard,
+)
 from handlers.payment_handler import (
     PendingUpgradeProofFilter,
     cancel_pending_keyboard,
     cb_cancel_pending_upgrade,
+    cb_request_upgrade_proof,
     cb_upgrade_currency,
     cb_upgrade_plan,
     cmd_approve_payment,
     cmd_reject_payment,
     cmd_upgrade,
     msg_upgrade_payment_proof,
+    pending_upgrade_keyboard,
     upgrade_currency_keyboard,
     upgrade_plans_keyboard,
 )
@@ -69,6 +77,21 @@ def _callback(user_id: int, data: str) -> SimpleNamespace:
     )
 
 
+def _document_message(
+    user_id: int,
+    file_name: str = "sample.png",
+    mime_type: str = "image/png",
+) -> SimpleNamespace:
+    message = _message(user_id)
+    message.document = SimpleNamespace(
+        file_id=f"file-{user_id}",
+        file_name=file_name,
+        mime_type=mime_type,
+        file_size=1024,
+    )
+    return message
+
+
 class UpgradeFlowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         db._pool = None
@@ -77,6 +100,7 @@ class UpgradeFlowTests(unittest.IsolatedAsyncioTestCase):
         db._memory_payments.clear()
         db._memory_cancelled_payment_refs.clear()
         db._memory_next_payment_id = 1
+        _conversion_store.clear()
 
         self._settings = {
             "admin_id": settings.admin_id,
@@ -121,6 +145,15 @@ class UpgradeFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("ILS receiving details", payment_text)
         self.assertIn(pending["payment_ref"], payment_text)
         self.assertIn("NEVER", payment_text)
+        payment_markup = callback.message.answer.await_args.kwargs["reply_markup"]
+        self.assertEqual(
+            payment_markup.inline_keyboard[0][0].callback_data,
+            f"upgrade:send_proof:{pending['payment_ref']}",
+        )
+        self.assertEqual(
+            payment_markup.inline_keyboard[1][0].callback_data,
+            f"upgrade:cancel_pending:{pending['payment_ref']}",
+        )
 
     async def test_cancel_and_choose_again_end_to_end(self) -> None:
         user_id = 111
@@ -134,6 +167,7 @@ class UpgradeFlowTests(unittest.IsolatedAsyncioTestCase):
             "RUB",
             old_ref,
         )
+        await db.request_upgrade_payment_proof(user_id, old_ref)
 
         upgrade_message = _message(user_id, "/upgrade")
         await cmd_upgrade(upgrade_message)
@@ -143,10 +177,14 @@ class UpgradeFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pending upgrade request", pending_text)
         self.assertEqual(
             pending_markup.inline_keyboard[0][0].callback_data,
+            f"upgrade:send_proof:{old_ref}",
+        )
+        self.assertEqual(
+            pending_markup.inline_keyboard[1][0].callback_data,
             f"upgrade:cancel_pending:{old_ref}",
         )
         self.assertEqual(
-            pending_markup.inline_keyboard[0][0].text,
+            pending_markup.inline_keyboard[1][0].text,
             "🔄 Cancel & choose again",
         )
 
@@ -161,6 +199,7 @@ class UpgradeFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(cancelled_user["payment_ref"])
         self.assertIsNone(cancelled_user["payment_plan"])
         self.assertIsNone(cancelled_user["payment_currency"])
+        self.assertIsNone(cancelled_user["payment_proof_requested_at"])
         self.assertIsNone(await db.get_pending_payment_by_ref(old_ref))
         cancelled_ref = await db.get_cancelled_payment_by_ref(old_ref)
         self.assertEqual(cancelled_ref["payment_plan"], "downloader_pro")
@@ -234,12 +273,25 @@ class UpgradeFlowTests(unittest.IsolatedAsyncioTestCase):
             forward_message=AsyncMock(),
             send_message=AsyncMock(),
         )
+        request_proof = _callback(
+            user_id,
+            f"upgrade:send_proof:{new_ref}",
+        )
+        await cb_request_upgrade_proof(request_proof)
+        self.assertIn(
+            "Send your payment screenshot",
+            request_proof.message.answer.await_args.args[0],
+        )
+        self.assertTrue(await PendingUpgradeProofFilter()(new_proof))
         await msg_upgrade_payment_proof(new_proof, new_proof_bot)
 
         new_admin_text = new_proof_bot.send_message.await_args.args[1]
         self.assertIn(new_ref, new_admin_text)
         self.assertIn(f"/approve {new_ref}", new_admin_text)
         self.assertIn("Payment proof received", new_proof.answer.await_args.args[0])
+        self.assertIsNone(
+            (await db.get_user_plan(user_id))["payment_proof_requested_at"]
+        )
 
         new_approve = _message(999, f"/approve {new_ref}")
         await cmd_approve_payment(new_approve, approval_bot)
@@ -275,7 +327,94 @@ class UpgradeFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(await db.cancel_pending_payment(999999))
 
-    async def test_recent_cancelled_proof_is_forwarded_without_caption(self) -> None:
+    async def test_cancelled_upgrade_file_reaches_converter(self) -> None:
+        user_id = 114
+        ref_code = f"SSB-{user_id}-CNV1"
+        await db.set_user_lang(user_id, "en")
+        await db.set_user_mode(user_id, "converter")
+        await db.set_payment_pending(
+            user_id,
+            "converter_pro",
+            "USD",
+            ref_code,
+        )
+
+        cancel = _callback(user_id, f"upgrade:cancel_pending:{ref_code}")
+        await cb_cancel_pending_upgrade(cancel)
+
+        row = await db.get_user_plan(user_id)
+        self.assertEqual(row["payment_status"], "none")
+        self.assertIsNone(row["payment_ref"])
+
+        conversion = _document_message(user_id, "receipt-looking.png", "image/png")
+        self.assertFalse(await PendingUpgradeProofFilter()(conversion))
+        self.assertFalse(await PendingPaymentReceiptFilter()(conversion))
+
+        await handle_convertible_file(conversion)
+
+        self.assertIn(
+            "Choose a target format",
+            conversion.answer.await_args.args[0],
+        )
+
+    async def test_pending_upgrade_does_not_intercept_converter_file(self) -> None:
+        user_id = 115
+        ref_code = f"SSB-{user_id}-CNV2"
+        await db.set_user_lang(user_id, "en")
+        await db.set_user_mode(user_id, "converter")
+        await db.set_payment_pending(
+            user_id,
+            "all_in_one",
+            "RUB",
+            ref_code,
+        )
+
+        conversion = _document_message(user_id, "unrelated.webp", "image/webp")
+        self.assertFalse(await PendingUpgradeProofFilter()(conversion))
+
+        await handle_convertible_file(conversion)
+
+        self.assertIn(
+            "Choose a target format",
+            conversion.answer.await_args.args[0],
+        )
+        pending = await db.get_pending_upgrade_payment_for_user(user_id)
+        self.assertEqual(pending["payment_ref"], ref_code)
+        self.assertIsNone(pending["payment_proof_requested_at"])
+
+    async def test_legacy_pending_payment_requires_explicit_receipt_intent(
+        self,
+    ) -> None:
+        user_id = 116
+        await db.set_user_lang(user_id, "en")
+        await db.set_user_mode(user_id, "converter")
+        payment = await db.create_payment_request(
+            user_id=user_id,
+            username="@legacy_converter",
+            plan=PLAN_CATALOG["converter_pro"],
+            currency="USD",
+            amount="$1.99",
+        )
+
+        conversion = _document_message(user_id, "unrelated.png", "image/png")
+        receipt_filter = PendingPaymentReceiptFilter()
+        self.assertFalse(await receipt_filter(conversion))
+
+        await handle_convertible_file(conversion)
+        self.assertIn(
+            "Choose a target format",
+            conversion.answer.await_args.args[0],
+        )
+
+        request_receipt = _callback(
+            user_id,
+            f"pay:send_proof:{payment['id']}",
+        )
+        await cb_request_payment_receipt(request_receipt)
+        proof = _document_message(user_id, "payment-receipt.pdf", "application/pdf")
+        self.assertTrue(await receipt_filter(proof))
+
+    async def test_cancelled_proof_requires_its_explicit_reference(self) -> None:
         user_id = 113
         ref_code = f"SSB-{user_id}-RACE"
         await db.register_user(user_id, "race_user", "Race", "User")
@@ -291,6 +430,9 @@ class UpgradeFlowTests(unittest.IsolatedAsyncioTestCase):
         proof = _message(user_id)
         proof.photo = [SimpleNamespace(file_id="race-proof")]
         proof_filter = PendingUpgradeProofFilter()
+        self.assertFalse(await proof_filter(proof))
+
+        proof.caption = f"Payment reference: {ref_code}"
         self.assertTrue(await proof_filter(proof))
 
         bot = SimpleNamespace(
@@ -303,12 +445,38 @@ class UpgradeFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("CANCELLED", bot.send_message.await_args.args[1])
         self.assertIn(ref_code, bot.send_message.await_args.args[1])
 
-        db._memory_cancelled_payment_refs[ref_code]["cancelled_at"] = (
-            datetime.now(timezone.utc) - timedelta(minutes=16)
+    async def test_proof_matched_before_cancel_is_still_forwarded(self) -> None:
+        user_id = 118
+        ref_code = f"SSB-{user_id}-RACE"
+        await db.register_user(user_id, "proof_race", "Proof", "Race")
+        await db.set_user_lang(user_id, "en")
+        await db.set_payment_pending(
+            user_id,
+            "all_in_one",
+            "USD",
+            ref_code,
         )
-        expired_proof = _message(user_id)
-        expired_proof.photo = [SimpleNamespace(file_id="late-proof")]
-        self.assertFalse(await proof_filter(expired_proof))
+        await db.request_upgrade_payment_proof(user_id, ref_code)
+
+        proof = _message(user_id)
+        proof.photo = [SimpleNamespace(file_id="racing-proof")]
+        filter_result = await PendingUpgradeProofFilter()(proof)
+        self.assertIsInstance(filter_result, dict)
+
+        await db.cancel_pending_payment(user_id)
+        bot = SimpleNamespace(
+            forward_message=AsyncMock(),
+            send_message=AsyncMock(),
+        )
+        await msg_upgrade_payment_proof(
+            proof,
+            bot,
+            filter_result["upgrade_payment_context"],
+        )
+
+        bot.forward_message.assert_awaited_once()
+        self.assertIn("CANCELLED", bot.send_message.await_args.args[1])
+        self.assertIn(ref_code, bot.send_message.await_args.args[1])
 
     async def test_ils_uses_its_own_payment_details(self) -> None:
         callback = _callback(110, "upgrade:currency:converter_pro:ILS")
@@ -346,7 +514,11 @@ class UpgradeFlowTests(unittest.IsolatedAsyncioTestCase):
 
         text = message.answer.await_args.args[0]
         self.assertIn("already have a pending payment request", text)
-        self.assertNotIn("reply_markup", message.answer.await_args.kwargs)
+        markup = message.answer.await_args.kwargs["reply_markup"]
+        self.assertEqual(
+            markup.inline_keyboard[0][0].callback_data,
+            "pay:send_proof:1",
+        )
 
     async def test_proof_is_forwarded_with_admin_commands(self) -> None:
         user_id = 103
@@ -362,6 +534,14 @@ class UpgradeFlowTests(unittest.IsolatedAsyncioTestCase):
         message.photo = [SimpleNamespace(file_id="photo-file")]
         bot = SimpleNamespace(forward_message=AsyncMock(), send_message=AsyncMock())
 
+        self.assertFalse(await PendingUpgradeProofFilter()(message))
+        request_proof = _callback(
+            user_id,
+            f"upgrade:send_proof:SSB-{user_id}-AB12",
+        )
+        await cb_request_upgrade_proof(request_proof)
+        self.assertTrue(await PendingUpgradeProofFilter()(message))
+
         await msg_upgrade_payment_proof(message, bot)
 
         bot.forward_message.assert_awaited_once_with(
@@ -374,6 +554,27 @@ class UpgradeFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f"/approve SSB-{user_id}-AB12", caption)
         self.assertIn(f"/reject SSB-{user_id}-AB12", caption)
         self.assertIn("Payment proof received", message.answer.await_args.args[0])
+        self.assertFalse(await PendingUpgradeProofFilter()(message))
+
+    async def test_expired_proof_intent_does_not_intercept_files(self) -> None:
+        user_id = 117
+        ref_code = f"SSB-{user_id}-TIME"
+        await db.set_payment_pending(
+            user_id,
+            "converter_pro",
+            "USD",
+            ref_code,
+        )
+        await db.request_upgrade_payment_proof(user_id, ref_code)
+        db._memory_users[user_id]["payment_proof_requested_at"] = (
+            datetime.now(timezone.utc) - timedelta(minutes=31)
+        )
+
+        message = _document_message(user_id)
+        self.assertFalse(await PendingUpgradeProofFilter()(message))
+        self.assertIsNone(
+            (await db.get_user_plan(user_id))["payment_proof_requested_at"]
+        )
 
     async def test_approve_activates_plan_and_notifies_user(self) -> None:
         user_id = 104
@@ -526,6 +727,14 @@ class UpgradeStaticTests(unittest.TestCase):
                     lang,
                     "SSB-9223372036854775807-ABCD",
                 ),
+                pending_upgrade_keyboard(
+                    lang,
+                    "SSB-9223372036854775807-ABCD",
+                ),
+                payment_receipt_keyboard(
+                    lang,
+                    9223372036854775807,
+                ),
             ]
             markups.extend(upgrade_currency_keyboard(lang, key) for key in PLANS)
             for markup in markups:
@@ -546,6 +755,24 @@ class UpgradeStaticTests(unittest.TestCase):
             ).inline_keyboard[0][0]
             self.assertEqual(button.text, text)
 
+    def test_payment_proof_button_is_translated(self) -> None:
+        expected = {
+            "en": "📎 I've paid — send proof",
+            "ar": "📎 دفعت — إرسال الإثبات",
+            "ru": "📎 Я оплатил — отправить чек",
+        }
+        for lang, text in expected.items():
+            button = pending_upgrade_keyboard(
+                lang,
+                "SSB-1-ABCD",
+            ).inline_keyboard[0][0]
+            self.assertEqual(button.text, text)
+            legacy_button = payment_receipt_keyboard(
+                lang,
+                1,
+            ).inline_keyboard[0][0]
+            self.assertEqual(legacy_button.text, text)
+
     def test_upgrade_translations_are_complete_and_formattable(self) -> None:
         locales = {
             lang: json.loads((PROJECT_ROOT / f"{lang}.json").read_text(encoding="utf-8"))
@@ -558,6 +785,23 @@ class UpgradeStaticTests(unittest.TestCase):
             for key in keys:
                 fields = re.findall(r"{([a-z_]+)}", translations[key])
                 translations[key].format(**{field: "test" for field in fields})
+
+    def test_help_lists_tier1_and_tier2_conversions(self) -> None:
+        for lang in ("en", "ar", "ru"):
+            translations = json.loads(
+                (PROJECT_ROOT / f"{lang}.json").read_text(encoding="utf-8")
+            )
+            help_text = translations["help"]
+            for expected in (
+                "/mode",
+                "MP4/WAV → MP3",
+                "PNG ↔ JPG ↔ WebP",
+                "DOCX/XLSX/PPTX/MD → PDF",
+                "PDF → DOCX/PPTX/MD/XLSX",
+                "DOCX → PPTX",
+                "Tier 2",
+            ):
+                self.assertIn(expected, help_text, f"Missing {expected!r} in {lang}")
 
     def test_env_example_contains_only_placeholders(self) -> None:
         example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")

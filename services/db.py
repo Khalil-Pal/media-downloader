@@ -64,6 +64,9 @@ async def init_db() -> None:
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_currency TEXT")
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_plan TEXT")
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_requested_at TIMESTAMPTZ")
+        await conn.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_proof_requested_at TIMESTAMPTZ"
+        )
         await conn.execute("ALTER TABLE users ALTER COLUMN lang DROP DEFAULT")
         await conn.execute("ALTER TABLE users ALTER COLUMN lang DROP NOT NULL")
         await conn.execute("""
@@ -92,11 +95,15 @@ async def init_db() -> None:
                 status           TEXT NOT NULL DEFAULT 'pending',
                 receipt_file_id  TEXT,
                 receipt_file_type TEXT,
+                proof_requested_at TIMESTAMPTZ,
                 created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 reviewed_at      TIMESTAMPTZ,
                 reviewed_by      BIGINT
             )
         """)
+        await conn.execute(
+            "ALTER TABLE payments ADD COLUMN IF NOT EXISTS proof_requested_at TIMESTAMPTZ"
+        )
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS payments_user_status_idx
             ON payments (user_id, status)
@@ -155,6 +162,7 @@ def _memory_register_user(user_id: int) -> dict[str, object | None]:
             "payment_currency": None,
             "payment_plan": None,
             "payment_requested_at": None,
+            "payment_proof_requested_at": None,
         },
     )
 
@@ -346,7 +354,8 @@ async def get_user_plan(user_id: int) -> dict | None:
                 payment_status,
                 payment_currency,
                 payment_plan,
-                payment_requested_at
+                payment_requested_at,
+                payment_proof_requested_at
             FROM users
             WHERE user_id = $1
         """, user_id)
@@ -368,8 +377,10 @@ async def set_user_plan(
             user["payment_currency"] = None
             user["payment_plan"] = None
             user["payment_requested_at"] = None
+            user["payment_proof_requested_at"] = None
         else:
             user["payment_status"] = "confirmed"
+            user["payment_proof_requested_at"] = None
         return dict(user, user_id=user_id)
 
     if plan == "free":
@@ -383,9 +394,10 @@ async def set_user_plan(
                     payment_status,
                     payment_currency,
                     payment_plan,
-                    payment_requested_at
+                    payment_requested_at,
+                    payment_proof_requested_at
                 )
-                VALUES ($1, 'free', NULL, NULL, 'none', NULL, NULL, NULL)
+                VALUES ($1, 'free', NULL, NULL, 'none', NULL, NULL, NULL, NULL)
                 ON CONFLICT (user_id) DO UPDATE SET
                     plan = 'free',
                     plan_expires_at = NULL,
@@ -393,7 +405,8 @@ async def set_user_plan(
                     payment_status = 'none',
                     payment_currency = NULL,
                     payment_plan = NULL,
-                    payment_requested_at = NULL
+                    payment_requested_at = NULL,
+                    payment_proof_requested_at = NULL
                 RETURNING *
             """, user_id)
             return dict(row)
@@ -410,7 +423,8 @@ async def set_user_plan(
             ON CONFLICT (user_id) DO UPDATE SET
                 plan = EXCLUDED.plan,
                 plan_expires_at = EXCLUDED.plan_expires_at,
-                payment_status = 'confirmed'
+                payment_status = 'confirmed',
+                payment_proof_requested_at = NULL
             RETURNING *
         """, user_id, plan, plan_expires_at)
         return dict(row)
@@ -467,6 +481,7 @@ async def set_payment_pending(
         user["payment_currency"] = currency
         user["payment_plan"] = plan
         user["payment_requested_at"] = _now()
+        user["payment_proof_requested_at"] = None
         return dict(user, user_id=user_id)
 
     async with _pool.acquire() as conn:
@@ -477,18 +492,66 @@ async def set_payment_pending(
                 payment_status,
                 payment_currency,
                 payment_plan,
-                payment_requested_at
+                payment_requested_at,
+                payment_proof_requested_at
             )
-            VALUES ($1, $2, 'pending', $3, $4, NOW())
+            VALUES ($1, $2, 'pending', $3, $4, NOW(), NULL)
             ON CONFLICT (user_id) DO UPDATE SET
                 payment_ref = EXCLUDED.payment_ref,
                 payment_status = 'pending',
                 payment_currency = EXCLUDED.payment_currency,
                 payment_plan = EXCLUDED.payment_plan,
-                payment_requested_at = NOW()
+                payment_requested_at = NOW(),
+                payment_proof_requested_at = NULL
             RETURNING *
         """, user_id, ref_code, currency, plan)
         return dict(row)
+
+
+async def request_upgrade_payment_proof(
+    user_id: int,
+    ref_code: str,
+) -> dict | None:
+    if not _ready():
+        user = _memory_users.get(user_id)
+        if (
+            not user
+            or user.get("payment_status") != "pending"
+            or user.get("payment_ref") != ref_code
+        ):
+            return None
+        user["payment_proof_requested_at"] = _now()
+        return dict(user, user_id=user_id)
+
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            UPDATE users
+            SET payment_proof_requested_at = NOW()
+            WHERE user_id = $1
+              AND payment_status = 'pending'
+              AND payment_ref = $2
+            RETURNING *
+        """, user_id, ref_code)
+        return dict(row) if row else None
+
+
+async def clear_upgrade_payment_proof_request(
+    user_id: int,
+    ref_code: str | None = None,
+) -> None:
+    if not _ready():
+        user = _memory_users.get(user_id)
+        if user and (ref_code is None or user.get("payment_ref") == ref_code):
+            user["payment_proof_requested_at"] = None
+        return
+
+    async with _pool.acquire() as conn:
+        await conn.execute("""
+            UPDATE users
+            SET payment_proof_requested_at = NULL
+            WHERE user_id = $1
+              AND ($2::TEXT IS NULL OR payment_ref = $2)
+        """, user_id, ref_code)
 
 
 async def cancel_pending_payment(user_id: int) -> dict | None:
@@ -515,6 +578,7 @@ async def cancel_pending_payment(user_id: int) -> dict | None:
         user["payment_currency"] = None
         user["payment_plan"] = None
         user["payment_requested_at"] = None
+        user["payment_proof_requested_at"] = None
         return dict(user, user_id=user_id, cancelled_ref=ref_code or None)
 
     async with _pool.acquire() as conn:
@@ -562,7 +626,8 @@ async def cancel_pending_payment(user_id: int) -> dict | None:
                     payment_status = 'none',
                     payment_currency = NULL,
                     payment_plan = NULL,
-                    payment_requested_at = NULL
+                    payment_requested_at = NULL,
+                    payment_proof_requested_at = NULL
                 WHERE user_id = $1
                   AND payment_status = 'pending'
                 RETURNING *
@@ -639,6 +704,7 @@ async def set_payment_confirmed(
                 user["plan"] = plan
                 user["plan_expires_at"] = plan_expires_at
                 user["payment_status"] = "confirmed"
+                user["payment_proof_requested_at"] = None
                 return dict(user, user_id=user_id)
         return None
 
@@ -647,7 +713,8 @@ async def set_payment_confirmed(
             UPDATE users
             SET plan = $2,
                 plan_expires_at = $3,
-                payment_status = 'confirmed'
+                payment_status = 'confirmed',
+                payment_proof_requested_at = NULL
             WHERE payment_ref = $1
               AND payment_status = 'pending'
             RETURNING *
@@ -667,6 +734,7 @@ async def set_payment_rejected(ref_code: str) -> dict | None:
                 user["payment_currency"] = None
                 user["payment_plan"] = None
                 user["payment_requested_at"] = None
+                user["payment_proof_requested_at"] = None
                 return dict(user, user_id=user_id)
         return None
 
@@ -677,7 +745,8 @@ async def set_payment_rejected(ref_code: str) -> dict | None:
                 payment_status = 'none',
                 payment_currency = NULL,
                 payment_plan = NULL,
-                payment_requested_at = NULL
+                payment_requested_at = NULL,
+                payment_proof_requested_at = NULL
             WHERE payment_ref = $1
               AND payment_status = 'pending'
             RETURNING *
@@ -766,6 +835,7 @@ async def create_payment_request(
             "status": "pending",
             "receipt_file_id": None,
             "receipt_file_type": None,
+            "proof_requested_at": None,
             "created_at": _now(),
             "reviewed_at": None,
             "reviewed_by": None,
@@ -789,6 +859,35 @@ async def create_payment_request(
         return dict(row)
 
 
+async def request_payment_receipt(
+    payment_id: int,
+    user_id: int,
+) -> dict | None:
+    if not _ready():
+        payment = _memory_payments.get(payment_id)
+        if (
+            payment is None
+            or payment["user_id"] != user_id
+            or payment["status"] != "pending"
+            or payment.get("receipt_file_id")
+        ):
+            return None
+        payment["proof_requested_at"] = _now()
+        return dict(payment)
+
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            UPDATE payments
+            SET proof_requested_at = NOW()
+            WHERE id = $1
+              AND user_id = $2
+              AND status = 'pending'
+              AND receipt_file_id IS NULL
+            RETURNING *
+        """, payment_id, user_id)
+        return dict(row) if row else None
+
+
 async def attach_payment_receipt(
     payment_id: int,
     receipt_file_id: str,
@@ -796,18 +895,26 @@ async def attach_payment_receipt(
 ) -> dict | None:
     if not _ready():
         payment = _memory_payments.get(payment_id)
-        if payment is None:
+        if (
+            payment is None
+            or payment["status"] != "pending"
+            or payment.get("receipt_file_id")
+        ):
             return None
         payment["receipt_file_id"] = receipt_file_id
         payment["receipt_file_type"] = receipt_file_type
+        payment["proof_requested_at"] = None
         return dict(payment)
 
     async with _pool.acquire() as conn:
         row = await conn.fetchrow("""
             UPDATE payments
             SET receipt_file_id = $2,
-                receipt_file_type = $3
+                receipt_file_type = $3,
+                proof_requested_at = NULL
             WHERE id = $1
+              AND status = 'pending'
+              AND receipt_file_id IS NULL
             RETURNING *
         """, payment_id, receipt_file_id, receipt_file_type)
         return dict(row) if row else None
@@ -835,6 +942,7 @@ async def set_payment_status(
         if payment is None or payment["status"] != "pending":
             return None
         payment["status"] = status
+        payment["proof_requested_at"] = None
         payment["reviewed_at"] = _now()
         payment["reviewed_by"] = reviewed_by
         return dict(payment)
@@ -843,6 +951,7 @@ async def set_payment_status(
         row = await conn.fetchrow("""
             UPDATE payments
             SET status = $2,
+                proof_requested_at = NULL,
                 reviewed_at = NOW(),
                 reviewed_by = $3
             WHERE id = $1
@@ -949,6 +1058,7 @@ async def approve_upgrade_payment(
                 user["plan"] = plan.key
                 user["plan_expires_at"] = expires_at
                 user["payment_status"] = "confirmed"
+                user["payment_proof_requested_at"] = None
                 return dict(user, user_id=user_id), dict(plan_row)
         return None
 
@@ -958,7 +1068,8 @@ async def approve_upgrade_payment(
                 UPDATE users
                 SET plan = $2,
                     plan_expires_at = $3,
-                    payment_status = 'confirmed'
+                    payment_status = 'confirmed',
+                    payment_proof_requested_at = NULL
                 WHERE payment_ref = $1
                   AND payment_status = 'pending'
                 RETURNING *
@@ -986,6 +1097,7 @@ async def activate_user_plan(user_id: int, plan: Plan) -> dict:
         user["plan"] = plan.key
         user["plan_expires_at"] = expires_at
         user["payment_status"] = "confirmed"
+        user["payment_proof_requested_at"] = None
         return dict(row)
 
     async with _pool.acquire() as conn:
@@ -1002,7 +1114,8 @@ async def activate_user_plan(user_id: int, plan: Plan) -> dict:
                 ON CONFLICT (user_id) DO UPDATE SET
                     plan = EXCLUDED.plan,
                     plan_expires_at = EXCLUDED.plan_expires_at,
-                    payment_status = 'confirmed'
+                    payment_status = 'confirmed',
+                    payment_proof_requested_at = NULL
             """, user_id, plan.key, expires_at)
             return dict(row)
 
