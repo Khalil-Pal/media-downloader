@@ -7,12 +7,15 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("BOT_TOKEN", "123456:test-token")
 
 from config.settings import settings
 from handlers.payment_handler import (
+    PendingUpgradeProofFilter,
+    cancel_pending_keyboard,
+    cb_cancel_pending_upgrade,
     cb_upgrade_currency,
     cmd_approve_payment,
     cmd_reject_payment,
@@ -47,6 +50,7 @@ def _message(user_id: int, text: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         from_user=_user(user_id),
         text=text,
+        caption=None,
         answer=AsyncMock(),
         chat=SimpleNamespace(id=user_id),
         message_id=100,
@@ -70,6 +74,7 @@ class UpgradeFlowTests(unittest.IsolatedAsyncioTestCase):
         db._memory_users.clear()
         db._memory_user_plans.clear()
         db._memory_payments.clear()
+        db._memory_cancelled_payment_refs.clear()
         db._memory_next_payment_id = 1
 
         self._settings = {
@@ -115,6 +120,194 @@ class UpgradeFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("ILS receiving details", payment_text)
         self.assertIn(pending["payment_ref"], payment_text)
         self.assertIn("NEVER", payment_text)
+
+    async def test_cancel_and_choose_again_end_to_end(self) -> None:
+        user_id = 111
+        old_ref = f"SSB-{user_id}-OLD1"
+        new_ref = f"SSB-{user_id}-NEW2"
+        await db.register_user(user_id, "switcher", "Plan", "Switcher")
+        await db.set_user_lang(user_id, "en")
+        await db.set_payment_pending(
+            user_id,
+            "downloader_pro",
+            "RUB",
+            old_ref,
+        )
+
+        upgrade_message = _message(user_id, "/upgrade")
+        await cmd_upgrade(upgrade_message)
+
+        pending_text = upgrade_message.answer.await_args.args[0]
+        pending_markup = upgrade_message.answer.await_args.kwargs["reply_markup"]
+        self.assertIn("pending upgrade request", pending_text)
+        self.assertEqual(
+            pending_markup.inline_keyboard[0][0].callback_data,
+            f"upgrade:cancel_pending:{old_ref}",
+        )
+        self.assertEqual(
+            pending_markup.inline_keyboard[0][0].text,
+            "🔄 Cancel & choose again",
+        )
+
+        cancel_callback = _callback(
+            user_id,
+            f"upgrade:cancel_pending:{old_ref}",
+        )
+        await cb_cancel_pending_upgrade(cancel_callback)
+
+        cancelled_user = await db.get_user_plan(user_id)
+        self.assertEqual(cancelled_user["payment_status"], "none")
+        self.assertIsNone(cancelled_user["payment_ref"])
+        self.assertIsNone(cancelled_user["payment_plan"])
+        self.assertIsNone(cancelled_user["payment_currency"])
+        self.assertIsNone(await db.get_pending_payment_by_ref(old_ref))
+        cancelled_ref = await db.get_cancelled_payment_by_ref(old_ref)
+        self.assertEqual(cancelled_ref["payment_plan"], "downloader_pro")
+        self.assertEqual(cancelled_ref["payment_currency"], "RUB")
+
+        reopened_text = cancel_callback.message.answer.await_args.args[0]
+        reopened_markup = cancel_callback.message.answer.await_args.kwargs["reply_markup"]
+        self.assertIn("Choose a plan", reopened_text)
+        self.assertEqual(len(reopened_markup.inline_keyboard), len(PLANS))
+
+        choose_new = _callback(
+            user_id,
+            "upgrade:currency:converter_pro:USD",
+        )
+        with patch(
+            "handlers.payment_handler.generate_reference_code",
+            side_effect=[old_ref, new_ref],
+        ):
+            await cb_upgrade_currency(choose_new)
+
+        new_pending = await db.get_pending_upgrade_payment_for_user(user_id)
+        self.assertEqual(new_pending["payment_ref"], new_ref)
+        self.assertNotEqual(new_pending["payment_ref"], old_ref)
+        self.assertEqual(new_pending["payment_plan"], "converter_pro")
+        self.assertEqual(new_pending["payment_currency"], "USD")
+
+        stale_cancel = _callback(
+            user_id,
+            f"upgrade:cancel_pending:{old_ref}",
+        )
+        await cb_cancel_pending_upgrade(stale_cancel)
+        self.assertEqual(
+            (await db.get_pending_upgrade_payment_for_user(user_id))["payment_ref"],
+            new_ref,
+        )
+
+        stale_proof = _message(user_id)
+        stale_proof.caption = f"Payment reference: {old_ref}"
+        stale_proof.photo = [SimpleNamespace(file_id="old-proof")]
+        self.assertTrue(await PendingUpgradeProofFilter()(stale_proof))
+        stale_bot = SimpleNamespace(
+            forward_message=AsyncMock(),
+            send_message=AsyncMock(),
+        )
+
+        await msg_upgrade_payment_proof(stale_proof, stale_bot)
+
+        stale_bot.forward_message.assert_awaited_once()
+        stale_admin_text = stale_bot.send_message.await_args.args[1]
+        self.assertIn("CANCELLED upgrade reference", stale_admin_text)
+        self.assertIn(old_ref, stale_admin_text)
+        self.assertIn("was cancelled", stale_proof.answer.await_args.args[0])
+
+        old_approve = _message(999, f"/approve {old_ref}")
+        approval_bot = SimpleNamespace(send_message=AsyncMock())
+        await cmd_approve_payment(old_approve, approval_bot)
+
+        self.assertIn(
+            "cancelled by the user and is no longer valid",
+            old_approve.answer.await_args.args[0],
+        )
+        approval_bot.send_message.assert_not_awaited()
+        self.assertEqual(
+            (await db.get_pending_upgrade_payment_for_user(user_id))["payment_ref"],
+            new_ref,
+        )
+
+        new_proof = _message(user_id)
+        new_proof.photo = [SimpleNamespace(file_id="new-proof")]
+        new_proof_bot = SimpleNamespace(
+            forward_message=AsyncMock(),
+            send_message=AsyncMock(),
+        )
+        await msg_upgrade_payment_proof(new_proof, new_proof_bot)
+
+        new_admin_text = new_proof_bot.send_message.await_args.args[1]
+        self.assertIn(new_ref, new_admin_text)
+        self.assertIn(f"/approve {new_ref}", new_admin_text)
+        self.assertIn("Payment proof received", new_proof.answer.await_args.args[0])
+
+        new_approve = _message(999, f"/approve {new_ref}")
+        await cmd_approve_payment(new_approve, approval_bot)
+
+        approved = await db.get_user_plan(user_id)
+        self.assertEqual(approved["payment_status"], "confirmed")
+        self.assertEqual(approved["plan"], "converter_pro")
+        self.assertIsNone(await db.get_pending_payment_by_ref(new_ref))
+        self.assertIsNotNone(await db.get_cancelled_payment_by_ref(old_ref))
+        approval_bot.send_message.assert_awaited_once()
+        self.assertIn("Approved upgrade", new_approve.answer.await_args.args[0])
+
+    async def test_cancel_only_changes_pending_rows(self) -> None:
+        user_id = 112
+        ref_code = f"SSB-{user_id}-KEEP"
+        expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+        await db.set_payment_pending(
+            user_id,
+            "downloader_pro",
+            "USD",
+            ref_code,
+        )
+        await db.set_payment_confirmed(
+            ref_code,
+            "downloader_pro",
+            expires_at,
+        )
+
+        self.assertIsNone(await db.cancel_pending_payment(user_id))
+        confirmed = await db.get_user_plan(user_id)
+        self.assertEqual(confirmed["payment_status"], "confirmed")
+        self.assertEqual(confirmed["payment_ref"], ref_code)
+
+        self.assertIsNone(await db.cancel_pending_payment(999999))
+
+    async def test_recent_cancelled_proof_is_forwarded_without_caption(self) -> None:
+        user_id = 113
+        ref_code = f"SSB-{user_id}-RACE"
+        await db.register_user(user_id, "race_user", "Race", "User")
+        await db.set_user_lang(user_id, "en")
+        await db.set_payment_pending(
+            user_id,
+            "starter_pack",
+            "ILS",
+            ref_code,
+        )
+        await db.cancel_pending_payment(user_id)
+
+        proof = _message(user_id)
+        proof.photo = [SimpleNamespace(file_id="race-proof")]
+        proof_filter = PendingUpgradeProofFilter()
+        self.assertTrue(await proof_filter(proof))
+
+        bot = SimpleNamespace(
+            forward_message=AsyncMock(),
+            send_message=AsyncMock(),
+        )
+        await msg_upgrade_payment_proof(proof, bot)
+
+        bot.forward_message.assert_awaited_once()
+        self.assertIn("CANCELLED", bot.send_message.await_args.args[1])
+        self.assertIn(ref_code, bot.send_message.await_args.args[1])
+
+        db._memory_cancelled_payment_refs[ref_code]["cancelled_at"] = (
+            datetime.now(timezone.utc) - timedelta(minutes=16)
+        )
+        expired_proof = _message(user_id)
+        expired_proof.photo = [SimpleNamespace(file_id="late-proof")]
+        self.assertFalse(await proof_filter(expired_proof))
 
     async def test_ils_uses_its_own_payment_details(self) -> None:
         callback = _callback(110, "upgrade:currency:converter_pro:ILS")
@@ -280,12 +473,31 @@ class UpgradeStaticTests(unittest.TestCase):
 
     def test_callback_data_fits_telegram_limit(self) -> None:
         for lang in ("en", "ar", "ru"):
-            markups = [upgrade_plans_keyboard(lang)]
+            markups = [
+                upgrade_plans_keyboard(lang),
+                cancel_pending_keyboard(
+                    lang,
+                    "SSB-9223372036854775807-ABCD",
+                ),
+            ]
             markups.extend(upgrade_currency_keyboard(lang, key) for key in PLANS)
             for markup in markups:
                 for row in markup.inline_keyboard:
                     for button in row:
                         self.assertLessEqual(len(button.callback_data.encode("utf-8")), 64)
+
+    def test_cancel_button_is_translated(self) -> None:
+        expected = {
+            "en": "🔄 Cancel & choose again",
+            "ar": "🔄 إلغاء واختيار خطة أخرى",
+            "ru": "🔄 Отменить и выбрать заново",
+        }
+        for lang, text in expected.items():
+            button = cancel_pending_keyboard(
+                lang,
+                "SSB-1-ABCD",
+            ).inline_keyboard[0][0]
+            self.assertEqual(button.text, text)
 
     def test_upgrade_translations_are_complete_and_formattable(self) -> None:
         locales = {

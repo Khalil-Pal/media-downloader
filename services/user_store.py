@@ -83,6 +83,10 @@ async def set_payment_pending(
     return await db.set_payment_pending(user_id, plan, currency, ref_code)
 
 
+async def cancel_pending_payment(user_id: int) -> dict | None:
+    return await db.cancel_pending_payment(user_id)
+
+
 async def set_payment_confirmed(ref_code: str, plan: str, plan_expires_at) -> dict | None:
     return await db.set_payment_confirmed(ref_code, plan, plan_expires_at)
 

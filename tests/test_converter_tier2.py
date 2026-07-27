@@ -177,6 +177,7 @@ class Tier2ConversionTests(unittest.IsolatedAsyncioTestCase):
         db._memory_users.clear()
         db._memory_user_plans.clear()
         db._memory_payments.clear()
+        db._memory_cancelled_payment_refs.clear()
 
     async def asyncTearDown(self) -> None:
         object.__setattr__(settings, "download_path", self._original_download_path)

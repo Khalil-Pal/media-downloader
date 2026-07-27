@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot, F, Router
 from aiogram.filters import BaseFilter, Command
@@ -24,13 +25,60 @@ from utils.i18n import t
 logger = logging.getLogger(__name__)
 router = Router(name="payments")
 
+_REFERENCE_PATTERN = re.compile(r"\bSSB-\d+-[A-Z0-9]{4}\b", re.IGNORECASE)
+_CANCELLED_PROOF_GRACE = timedelta(minutes=15)
+
+
+def _reference_from_message(message: Message) -> str | None:
+    text = (
+        getattr(message, "caption", None)
+        or getattr(message, "text", None)
+        or ""
+    )
+    match = _REFERENCE_PATTERN.search(text)
+    return match.group(0).upper() if match else None
+
+
+def _is_recent_cancelled_payment(row: dict) -> bool:
+    cancelled_at = row.get("cancelled_at")
+    if not isinstance(cancelled_at, datetime):
+        return False
+    if cancelled_at.tzinfo is None:
+        cancelled_at = cancelled_at.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - cancelled_at.astimezone(timezone.utc)
+    return timedelta(0) <= age <= _CANCELLED_PROOF_GRACE
+
+
+async def _proof_payment_context(message: Message) -> tuple[dict, bool] | None:
+    if message.from_user is None:
+        return None
+
+    user_id = message.from_user.id
+    explicit_ref = _reference_from_message(message)
+    if explicit_ref:
+        cancelled = await db.get_cancelled_payment_by_ref(explicit_ref)
+        if cancelled and int(cancelled["user_id"]) == user_id:
+            return cancelled, True
+
+    pending = await db.get_pending_upgrade_payment_for_user(user_id)
+    if pending:
+        return pending, False
+
+    # Leave legacy receipts to handlers.menu.PendingPaymentReceiptFilter.
+    if await db.get_pending_payment_for_user(user_id):
+        return None
+
+    cancelled = await db.get_latest_cancelled_payment_for_user(user_id)
+    if cancelled and _is_recent_cancelled_payment(cancelled):
+        return cancelled, True
+    return None
+
 
 class PendingUpgradeProofFilter(BaseFilter):
     async def __call__(self, message: Message) -> bool:
         if message.from_user is None or not (message.photo or message.document):
             return False
-        pending = await db.get_pending_upgrade_payment_for_user(message.from_user.id)
-        return pending is not None
+        return await _proof_payment_context(message) is not None
 
 
 def _is_admin(user_id: int | None) -> bool:
@@ -71,6 +119,15 @@ def upgrade_currency_keyboard(lang: str, plan_key: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def cancel_pending_keyboard(lang: str, ref_code: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=t(lang, "upgrade_btn_cancel_pending"),
+        callback_data=f"upgrade:cancel_pending:{ref_code}",
+    )
+    return builder.as_markup()
+
+
 def _plans_overview(lang: str) -> str:
     lines = [t(lang, "upgrade_choose_plan")]
     for plan in PLANS.values():
@@ -88,11 +145,14 @@ def _plans_overview(lang: str) -> str:
 
 
 async def _new_reference_code(user_id: int) -> str:
-    for _ in range(8):
+    for _ in range(32):
         ref_code = generate_reference_code(user_id)
-        if not await db.get_pending_payment_by_ref(ref_code):
+        if (
+            not await db.get_pending_payment_by_ref(ref_code)
+            and not await db.get_cancelled_payment_by_ref(ref_code)
+        ):
             return ref_code
-    return generate_reference_code(user_id)
+    raise RuntimeError("Could not generate a unique payment reference.")
 
 
 def _pending_text(lang: str, row: dict) -> str:
@@ -124,25 +184,42 @@ def _legacy_pending_text(lang: str, row: dict) -> str:
     )
 
 
-async def _existing_pending_text(user_id: int, lang: str) -> str | None:
+async def _existing_pending_prompt(
+    user_id: int,
+    lang: str,
+) -> tuple[str, InlineKeyboardMarkup | None] | None:
     pending = await db.get_pending_upgrade_payment_for_user(user_id)
     if pending:
-        return _pending_text(lang, pending)
+        return (
+            _pending_text(lang, pending),
+            cancel_pending_keyboard(lang, str(pending.get("payment_ref") or "")),
+        )
 
     legacy_pending = await db.get_pending_payment_for_user(user_id)
     if legacy_pending:
-        return _legacy_pending_text(lang, legacy_pending)
+        return _legacy_pending_text(lang, legacy_pending), None
     return None
 
 
-@router.message(Command("upgrade"))
-async def cmd_upgrade(message: Message) -> None:
-    user_id = message.from_user.id  # type: ignore[union-attr]
-    lang = await get_user_lang_or_default(user_id)
+async def _answer_existing_pending(message: Message, user_id: int, lang: str) -> bool:
+    prompt = await _existing_pending_prompt(user_id, lang)
+    if prompt is None:
+        return False
 
-    pending_text = await _existing_pending_text(user_id, lang)
-    if pending_text:
-        await message.answer(pending_text, parse_mode=None)
+    text, reply_markup = prompt
+    if reply_markup is None:
+        await message.answer(text, parse_mode=None)
+    else:
+        await message.answer(
+            text,
+            reply_markup=reply_markup,
+            parse_mode=None,
+        )
+    return True
+
+
+async def _send_upgrade_start(message: Message, user_id: int, lang: str) -> None:
+    if await _answer_existing_pending(message, user_id, lang):
         return
 
     await message.answer(
@@ -152,6 +229,33 @@ async def cmd_upgrade(message: Message) -> None:
     )
 
 
+@router.message(Command("upgrade"))
+async def cmd_upgrade(message: Message) -> None:
+    user_id = message.from_user.id  # type: ignore[union-attr]
+    lang = await get_user_lang_or_default(user_id)
+    await _send_upgrade_start(message, user_id, lang)
+
+
+@router.callback_query(F.data.startswith("upgrade:cancel_pending:"))
+async def cb_cancel_pending_upgrade(callback: CallbackQuery) -> None:
+    await callback.answer()
+    if callback.message is None:
+        return
+
+    user_id = callback.from_user.id
+    lang = await get_user_lang_or_default(user_id)
+    expected_ref = (callback.data or "").split(":", 2)[2]
+    pending = await db.get_pending_upgrade_payment_for_user(user_id)
+    if pending and str(pending.get("payment_ref") or "") == expected_ref:
+        cancelled = await db.cancel_pending_payment(user_id)
+        if cancelled:
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+    await _send_upgrade_start(callback.message, user_id, lang)
+
+
 @router.callback_query(F.data == "upgrade:plans")
 async def cb_upgrade_back_to_plans(callback: CallbackQuery) -> None:
     await callback.answer()
@@ -159,11 +263,7 @@ async def cb_upgrade_back_to_plans(callback: CallbackQuery) -> None:
         return
 
     lang = await get_user_lang_or_default(callback.from_user.id)
-    await callback.message.answer(
-        _plans_overview(lang),
-        reply_markup=upgrade_plans_keyboard(lang),
-        parse_mode=None,
-    )
+    await _send_upgrade_start(callback.message, callback.from_user.id, lang)
 
 
 @router.callback_query(F.data.startswith("upgrade:plan:"))
@@ -179,9 +279,11 @@ async def cb_upgrade_plan(callback: CallbackQuery) -> None:
         await callback.message.answer(t(lang, "unknown_plan"), parse_mode=None)
         return
 
-    pending_text = await _existing_pending_text(callback.from_user.id, lang)
-    if pending_text:
-        await callback.message.answer(pending_text, parse_mode=None)
+    if await _answer_existing_pending(
+        callback.message,
+        callback.from_user.id,
+        lang,
+    ):
         return
 
     await callback.message.answer(
@@ -211,9 +313,7 @@ async def cb_upgrade_currency(callback: CallbackQuery) -> None:
         await callback.message.answer(t(lang, "unknown_plan"), parse_mode=None)
         return
 
-    pending_text = await _existing_pending_text(user_id, lang)
-    if pending_text:
-        await callback.message.answer(pending_text, parse_mode=None)
+    if await _answer_existing_pending(callback.message, user_id, lang):
         return
 
     payment_info = settings.upgrade_payment_info_for(currency)
@@ -245,18 +345,19 @@ async def cb_upgrade_currency(callback: CallbackQuery) -> None:
 async def msg_upgrade_payment_proof(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
     lang = await get_user_lang_or_default(user_id)
-    pending = await db.get_pending_upgrade_payment_for_user(user_id)
-    if pending is None:
+    context = await _proof_payment_context(message)
+    if context is None:
         return
+    payment, was_cancelled = context
 
     if not settings.admin_id:
         await message.answer(t(lang, "upgrade_admin_missing"), parse_mode=None)
         return
 
-    ref_code = str(pending.get("payment_ref") or "")
-    plan = get_plan(str(pending.get("payment_plan") or ""))
-    plan_name = plan.name if plan else str(pending.get("payment_plan") or "-")
-    username = pending.get("username") or "-"
+    ref_code = str(payment.get("payment_ref") or "")
+    plan = get_plan(str(payment.get("payment_plan") or ""))
+    plan_name = plan.name if plan else str(payment.get("payment_plan") or "-")
+    username = payment.get("username") or "-"
 
     try:
         await bot.forward_message(
@@ -266,15 +367,27 @@ async def msg_upgrade_payment_proof(message: Message, bot: Bot) -> None:
         )
         await bot.send_message(
             settings.admin_id,
-            t(
-                "en",
-                "upgrade_admin_proof_caption",
-                user_id=user_id,
-                username=username,
-                plan_name=plan_name,
-                currency=pending.get("payment_currency") or "-",
-                ref_code=ref_code,
-                approve_command=f"/approve {ref_code}",
+            (
+                t(
+                    "en",
+                    "upgrade_admin_cancelled_proof_caption",
+                    user_id=user_id,
+                    username=username,
+                    plan_name=plan_name,
+                    currency=payment.get("payment_currency") or "-",
+                    ref_code=ref_code,
+                )
+                if was_cancelled
+                else t(
+                    "en",
+                    "upgrade_admin_proof_caption",
+                    user_id=user_id,
+                    username=username,
+                    plan_name=plan_name,
+                    currency=payment.get("payment_currency") or "-",
+                    ref_code=ref_code,
+                    approve_command=f"/approve {ref_code}",
+                )
             ),
             parse_mode=None,
         )
@@ -283,10 +396,17 @@ async def msg_upgrade_payment_proof(message: Message, bot: Bot) -> None:
         await message.answer(t(lang, "upgrade_admin_unavailable"), parse_mode=None)
         return
 
-    await message.answer(
-        t(lang, "upgrade_proof_received", eta=settings.payment_review_eta),
-        parse_mode=None,
-    )
+    if was_cancelled:
+        response = t(lang, "upgrade_cancelled_proof_received", ref_code=ref_code)
+    else:
+        response = t(lang, "upgrade_proof_received", eta=settings.payment_review_eta)
+    await message.answer(response, parse_mode=None)
+
+
+async def _answer_reference_unavailable(message: Message, ref_code: str) -> None:
+    cancelled = await db.get_cancelled_payment_by_ref(ref_code)
+    key = "upgrade_ref_cancelled" if cancelled else "upgrade_ref_not_found"
+    await message.answer(t("en", key, ref_code=ref_code), parse_mode=None)
 
 
 @router.message(Command("approve"))
@@ -302,7 +422,7 @@ async def cmd_approve_payment(message: Message, bot: Bot) -> None:
     ref_code = parts[1].strip()
     pending = await db.get_pending_payment_by_ref(ref_code)
     if pending is None:
-        await message.answer(t("en", "upgrade_ref_not_found", ref_code=ref_code), parse_mode=None)
+        await _answer_reference_unavailable(message, ref_code)
         return
 
     plan_key = str(pending.get("payment_plan") or "")
@@ -313,7 +433,7 @@ async def cmd_approve_payment(message: Message, bot: Bot) -> None:
 
     approved = await db.approve_upgrade_payment(ref_code, plan)
     if approved is None:
-        await message.answer(t("en", "upgrade_ref_not_found", ref_code=ref_code), parse_mode=None)
+        await _answer_reference_unavailable(message, ref_code)
         return
 
     updated, active_plan = approved
@@ -367,12 +487,12 @@ async def cmd_reject_payment(message: Message, bot: Bot) -> None:
     _, ref_code, reason = parts
     pending = await db.get_pending_payment_by_ref(ref_code)
     if pending is None:
-        await message.answer(t("en", "upgrade_ref_not_found", ref_code=ref_code), parse_mode=None)
+        await _answer_reference_unavailable(message, ref_code)
         return
 
     updated = await db.set_payment_rejected(ref_code)
     if updated is None:
-        await message.answer(t("en", "upgrade_ref_not_found", ref_code=ref_code), parse_mode=None)
+        await _answer_reference_unavailable(message, ref_code)
         return
 
     user_id = int(updated["user_id"])
