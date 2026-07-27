@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import secrets
 import string
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from services.plans import PLANS as _PLAN_CATALOG
 from services.plans import Plan as UpgradePlan
 
 REFERENCE_ALPHABET = string.ascii_uppercase + string.digits
 SUPPORTED_CURRENCIES = ("RUB", "USD", "ILS")
+PAYMENT_PROOF_WINDOW_MINUTES = 30
+PAYMENT_PROOF_WINDOW = timedelta(minutes=PAYMENT_PROOF_WINDOW_MINUTES)
 
 # Keep one source of truth for prices, durations, and plan capabilities.
 PLANS: dict[str, UpgradePlan] = dict(_PLAN_CATALOG)
@@ -29,6 +31,15 @@ def plan_price(plan_key: str, currency: str) -> str | None:
     if plan is None:
         return None
     return plan.prices.get(currency)
+
+
+def payment_proof_request_is_active(requested_at: object) -> bool:
+    if not isinstance(requested_at, datetime):
+        return False
+    if requested_at.tzinfo is None:
+        requested_at = requested_at.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - requested_at.astimezone(timezone.utc)
+    return timedelta(0) <= age <= PAYMENT_PROOF_WINDOW
 
 
 async def user_has_active_plan(user_id: int) -> bool:
