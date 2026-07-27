@@ -17,6 +17,7 @@ from handlers.payment_handler import (
     cancel_pending_keyboard,
     cb_cancel_pending_upgrade,
     cb_upgrade_currency,
+    cb_upgrade_plan,
     cmd_approve_payment,
     cmd_reject_payment,
     cmd_upgrade,
@@ -444,18 +445,64 @@ class UpgradeFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["first_name"], "New")
         self.assertEqual(row["last_name"], "Name")
 
-    async def test_profile_middleware_updates_message_and_callback_users(self) -> None:
+    async def test_profile_middleware_registers_new_upgrade_user_before_handler(
+        self,
+    ) -> None:
         middleware = UserProfileMiddleware()
-        handler = AsyncMock(return_value="handled")
-        message = _message(108)
+        message = _message(108, "/upgrade")
+        message.from_user = SimpleNamespace(
+            id=108,
+            username="first_contact",
+            first_name="First",
+            last_name="Contact",
+        )
 
+        async def handler(event, data):
+            row_before_handler = await db.get_user_plan(108)
+            self.assertIsNotNone(row_before_handler)
+            await cmd_upgrade(event)
+            return "handled"
+
+        self.assertIsNone(await db.get_user_plan(108))
         result = await middleware(handler, message, {})
 
         self.assertEqual(result, "handled")
-        handler.assert_awaited_once_with(message, {})
         row = await db.get_user_plan(108)
-        self.assertEqual(row["username"], "test_user")
-        self.assertEqual(row["first_name"], "Test")
+        self.assertEqual(row["username"], "first_contact")
+        self.assertEqual(row["first_name"], "First")
+        self.assertEqual(row["last_name"], "Contact")
+        self.assertIn("Choose a plan", message.answer.await_args.args[0])
+
+    async def test_profile_middleware_registers_new_callback_user_before_handler(
+        self,
+    ) -> None:
+        middleware = UserProfileMiddleware()
+        callback = _callback(109, "upgrade:plan:downloader_pro")
+        callback.from_user = SimpleNamespace(
+            id=109,
+            username="callback_first",
+            first_name="Callback",
+            last_name="First",
+        )
+
+        async def handler(event, data):
+            row_before_handler = await db.get_user_plan(109)
+            self.assertIsNotNone(row_before_handler)
+            await cb_upgrade_plan(event)
+            return "handled"
+
+        self.assertIsNone(await db.get_user_plan(109))
+        result = await middleware(handler, callback, {})
+
+        self.assertEqual(result, "handled")
+        row = await db.get_user_plan(109)
+        self.assertEqual(row["username"], "callback_first")
+        self.assertEqual(row["first_name"], "Callback")
+        self.assertEqual(row["last_name"], "First")
+        self.assertIn(
+            "Choose payment currency",
+            callback.message.answer.await_args.args[0],
+        )
 
 
 class UpgradeStaticTests(unittest.TestCase):
