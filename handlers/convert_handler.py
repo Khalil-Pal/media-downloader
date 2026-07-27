@@ -22,6 +22,7 @@ from services.converter import (
     supported_targets,
     tier2_caveat_key,
 )
+from services.payments import check_plan_access, record_plan_usage
 from services.telethon_uploader import upload_large_file
 from services.user_store import get_user_lang_or_default, get_user_mode_or_default
 from utils import rate_limiter
@@ -118,14 +119,35 @@ async def handle_convertible_file(message: Message) -> None:
         await message.answer(t(lang, "mode_need_converter"))
         return
 
+    if not options:
+        await message.answer(t(lang, "conversion_unsupported"))
+        return
+
+    plan_access = await check_plan_access(user_id, "conversion")
+    if not plan_access.allowed:
+        await message.answer(
+            t(
+                lang,
+                plan_access.message_key or "plan_upgrade_required",
+                limit=plan_access.daily_limit or 0,
+            )
+        )
+        return
+
+    if file_size and file_size > plan_access.max_file_size_mb * 1024 * 1024:
+        await message.answer(
+            t(
+                lang,
+                "plan_file_too_large",
+                limit=plan_access.max_file_size_mb,
+            )
+        )
+        return
+
     if file_size and file_size > settings.max_convert_file_size_bytes:
         await message.answer(
             t(lang, "conversion_too_large", limit=settings.max_convert_file_size_mb)
         )
-        return
-
-    if not options:
-        await message.answer(t(lang, "conversion_unsupported"))
         return
 
     targets = tuple(option.target_format for option in options)
@@ -171,6 +193,32 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
 
     if target_format not in request.targets:
         await callback.answer(t(lang, "invalid_selection"), show_alert=True)
+        return
+
+    plan_access = await check_plan_access(user_id, "conversion")
+    if not plan_access.allowed:
+        await callback.answer(
+            t(
+                lang,
+                plan_access.message_key or "plan_upgrade_required",
+                limit=plan_access.daily_limit or 0,
+            ),
+            show_alert=True,
+        )
+        return
+
+    if (
+        request.file_size
+        and request.file_size > plan_access.max_file_size_mb * 1024 * 1024
+    ):
+        await callback.answer(
+            t(
+                lang,
+                "plan_file_too_large",
+                limit=plan_access.max_file_size_mb,
+            ),
+            show_alert=True,
+        )
         return
 
     allowed, reason = await rate_limiter.check(user_id)
@@ -229,8 +277,16 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
                 caption=caption,
             )
 
+        try:
+            await record_plan_usage(user_id, "conversion")
+        except Exception:
+            logger.exception("Could not record plan usage for user %s.", user_id)
+
         if status_msg:
-            await status_msg.delete()
+            try:
+                await status_msg.delete()
+            except Exception as exc:
+                logger.debug("Could not delete completed conversion status: %s", exc)
 
     except Exception as exc:
         logger.exception("Conversion failed for %s to %s", request.file_name, target_format)
