@@ -30,6 +30,7 @@ _memory_total_downloads = 0
 _memory_failed_downloads = 0
 _memory_payments: dict[int, dict] = {}
 _memory_user_plans: dict[int, dict] = {}
+_memory_cancelled_payment_refs: dict[str, dict] = {}
 _memory_next_payment_id = 1
 
 
@@ -99,6 +100,19 @@ async def init_db() -> None:
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS payments_user_status_idx
             ON payments (user_id, status)
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS cancelled_payment_refs (
+                payment_ref      TEXT PRIMARY KEY,
+                user_id          BIGINT NOT NULL,
+                payment_plan     TEXT,
+                payment_currency TEXT,
+                cancelled_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS cancelled_payment_refs_user_idx
+            ON cancelled_payment_refs (user_id, cancelled_at DESC)
         """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS user_plans (
@@ -475,6 +489,140 @@ async def set_payment_pending(
             RETURNING *
         """, user_id, ref_code, currency, plan)
         return dict(row)
+
+
+async def cancel_pending_payment(user_id: int) -> dict | None:
+    """Cancel only the user's active pending upgrade and retain its reference."""
+    if not _ready():
+        user = _memory_users.get(user_id)
+        if not user or user.get("payment_status") != "pending":
+            return None
+
+        ref_code = str(user.get("payment_ref") or "")
+        if ref_code:
+            _memory_cancelled_payment_refs[ref_code] = {
+                "user_id": user_id,
+                "username": user.get("username"),
+                "payment_ref": ref_code,
+                "payment_plan": user.get("payment_plan"),
+                "payment_currency": user.get("payment_currency"),
+                "payment_status": "cancelled",
+                "cancelled_at": _now(),
+            }
+
+        user["payment_ref"] = None
+        user["payment_status"] = "none"
+        user["payment_currency"] = None
+        user["payment_plan"] = None
+        user["payment_requested_at"] = None
+        return dict(user, user_id=user_id, cancelled_ref=ref_code or None)
+
+    async with _pool.acquire() as conn:
+        async with conn.transaction():
+            pending = await conn.fetchrow("""
+                SELECT
+                    user_id,
+                    payment_ref,
+                    payment_plan,
+                    payment_currency
+                FROM users
+                WHERE user_id = $1
+                  AND payment_status = 'pending'
+                FOR UPDATE
+            """, user_id)
+            if pending is None:
+                return None
+
+            ref_code = pending["payment_ref"]
+            if ref_code:
+                await conn.execute("""
+                    INSERT INTO cancelled_payment_refs (
+                        payment_ref,
+                        user_id,
+                        payment_plan,
+                        payment_currency,
+                        cancelled_at
+                    )
+                    VALUES ($1, $2, $3, $4, NOW())
+                    ON CONFLICT (payment_ref) DO UPDATE SET
+                        user_id = EXCLUDED.user_id,
+                        payment_plan = EXCLUDED.payment_plan,
+                        payment_currency = EXCLUDED.payment_currency,
+                        cancelled_at = NOW()
+                """,
+                    ref_code,
+                    pending["user_id"],
+                    pending["payment_plan"],
+                    pending["payment_currency"],
+                )
+
+            row = await conn.fetchrow("""
+                UPDATE users
+                SET payment_ref = NULL,
+                    payment_status = 'none',
+                    payment_currency = NULL,
+                    payment_plan = NULL,
+                    payment_requested_at = NULL
+                WHERE user_id = $1
+                  AND payment_status = 'pending'
+                RETURNING *
+            """, user_id)
+            if row is None:
+                return None
+            return dict(row, cancelled_ref=ref_code)
+
+
+async def get_cancelled_payment_by_ref(ref_code: str) -> dict | None:
+    if not _ready():
+        row = _memory_cancelled_payment_refs.get(ref_code)
+        return dict(row) if row else None
+
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT
+                cancelled.user_id,
+                users.username,
+                cancelled.payment_ref,
+                cancelled.payment_plan,
+                cancelled.payment_currency,
+                'cancelled' AS payment_status,
+                cancelled.cancelled_at
+            FROM cancelled_payment_refs AS cancelled
+            LEFT JOIN users ON users.user_id = cancelled.user_id
+            WHERE cancelled.payment_ref = $1
+        """, ref_code)
+        return dict(row) if row else None
+
+
+async def get_latest_cancelled_payment_for_user(user_id: int) -> dict | None:
+    if not _ready():
+        matches = [
+            row
+            for row in _memory_cancelled_payment_refs.values()
+            if row.get("user_id") == user_id
+        ]
+        if not matches:
+            return None
+        latest = max(matches, key=lambda row: row["cancelled_at"])
+        return dict(latest)
+
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT
+                cancelled.user_id,
+                users.username,
+                cancelled.payment_ref,
+                cancelled.payment_plan,
+                cancelled.payment_currency,
+                'cancelled' AS payment_status,
+                cancelled.cancelled_at
+            FROM cancelled_payment_refs AS cancelled
+            LEFT JOIN users ON users.user_id = cancelled.user_id
+            WHERE cancelled.user_id = $1
+            ORDER BY cancelled.cancelled_at DESC
+            LIMIT 1
+        """, user_id)
+        return dict(row) if row else None
 
 
 async def set_payment_confirmed(

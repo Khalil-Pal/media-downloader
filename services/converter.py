@@ -9,8 +9,10 @@ import asyncio
 import logging
 import shutil
 import uuid
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable
 
 from config.settings import settings
 
@@ -24,6 +26,11 @@ MARKDOWN_FORMATS = {"md", "markdown"}
 PDF_FORMATS = {"pdf"}
 PDF_TO_OFFICE = {"docx", "pptx"}
 PDF_TO_TEXT_FORMATS = {"md", "xlsx"}
+PDF_TARGET_FORMATS = PDF_TO_OFFICE | PDF_TO_TEXT_FORMATS
+PDF_LIBREOFFICE_FILTERS = {
+    "docx": ("writer_pdf_import", "Office Open XML Text"),
+    "pptx": ("impress_pdf_import", "Impress MS PowerPoint 2007 XML"),
+}
 DOCX_TO_PPTX = ("docx", "pptx")
 AUDIO_VIDEO_EXTENSIONS = {
     "3gp", "aac", "aiff", "ape", "avi", "flac", "flv", "m4a", "m4v",
@@ -136,7 +143,7 @@ def tier2_caveat_key(
     target = target_format.lower().lstrip(".")
     if (source_ext, target) == DOCX_TO_PPTX:
         return "conversion_tier2_caveat_docx_pptx"
-    if source_is_pdf and target in (PDF_TO_OFFICE | PDF_TO_TEXT_FORMATS):
+    if source_is_pdf and target in PDF_TARGET_FORMATS:
         return "conversion_tier2_caveat"
     return None
 
@@ -159,6 +166,13 @@ async def convert_file(input_path: Path, target_format: str, mime_type: str | No
         source_is_pdf = source_ext == "pdf" or (mime_type or "").lower() == "application/pdf"
         output_path = input_path.with_name(f"{input_path.stem}.{target}")
 
+        if source_is_pdf and target in PDF_TARGET_FORMATS:
+            await _run_threaded_conversion(
+                _ensure_pdf_has_text,
+                input_path,
+                timeout=SLOW_CONVERSION_TIMEOUT_SECONDS,
+            )
+
         if target == "mp3":
             await _convert_to_mp3(input_path, output_path)
         elif source_ext in IMAGE_FORMATS and target in IMAGE_FORMATS:
@@ -168,16 +182,17 @@ async def convert_file(input_path: Path, target_format: str, mime_type: str | No
         elif source_ext in MARKDOWN_FORMATS and target == "pdf":
             await asyncio.to_thread(_convert_markdown_to_pdf, input_path, output_path)
         elif source_is_pdf and target in PDF_TO_OFFICE:
-            _ensure_pdf_has_text(input_path)
             # LibreOffice PDF import has low fidelity for complex layouts, tables,
             # and scanned/image-only documents.
+            input_filter, output_filter = PDF_LIBREOFFICE_FILTERS[target]
             output_path = await _convert_with_libreoffice(
                 input_path,
                 target,
                 timeout=SLOW_CONVERSION_TIMEOUT_SECONDS,
+                input_filter=input_filter,
+                output_filter=output_filter,
             )
         elif source_is_pdf and target == "md":
-            _ensure_pdf_has_text(input_path)
             await _run_threaded_conversion(
                 _convert_pdf_to_markdown,
                 input_path,
@@ -185,7 +200,6 @@ async def convert_file(input_path: Path, target_format: str, mime_type: str | No
                 timeout=SLOW_CONVERSION_TIMEOUT_SECONDS,
             )
         elif source_is_pdf and target == "xlsx":
-            _ensure_pdf_has_text(input_path)
             await _run_threaded_conversion(
                 _convert_pdf_to_xlsx,
                 input_path,
@@ -239,7 +253,11 @@ async def _run_process(
         raise ConversionError("tool_failed")
 
 
-async def _run_threaded_conversion(function, *args, timeout: int) -> None:
+async def _run_threaded_conversion(
+    function: Callable[..., Any],
+    *args: Any,
+    timeout: int,
+) -> None:
     try:
         await asyncio.wait_for(asyncio.to_thread(function, *args), timeout=timeout)
     except asyncio.TimeoutError as exc:
@@ -286,21 +304,35 @@ async def _convert_with_libreoffice(
     input_path: Path,
     target_format: str,
     timeout: int = CONVERSION_TIMEOUT_SECONDS,
+    input_filter: str | None = None,
+    output_filter: str | None = None,
 ) -> Path:
     output_path = input_path.with_suffix("." + target_format)
     output_path.unlink(missing_ok=True)
     profile_dir = input_path.parent / ("lo_profile_" + uuid.uuid4().hex)
     profile_dir.mkdir(parents=True, exist_ok=True)
+    conversion_target = (
+        f"{target_format}:{output_filter}"
+        if output_filter
+        else target_format
+    )
+    command = [
+        "soffice",
+        f"-env:UserInstallation={profile_dir.resolve().as_uri()}",
+        "--headless",
+    ]
+    if input_filter:
+        command.append(f"--infilter={input_filter}")
+    command.extend(
+        [
+            "--convert-to", conversion_target,
+            "--outdir", str(input_path.parent),
+            str(input_path),
+        ]
+    )
     try:
         await _run_process(
-            [
-                "soffice",
-                f"-env:UserInstallation={profile_dir.resolve().as_uri()}",
-                "--headless",
-                "--convert-to", target_format,
-                "--outdir", str(input_path.parent),
-                str(input_path),
-            ],
+            command,
             "LibreOffice",
             timeout=timeout,
         )
@@ -397,27 +429,87 @@ def _convert_pdf_to_xlsx(input_path: Path, output_path: Path) -> None:
 
     output_path.unlink(missing_ok=True)
     try:
-        tables = camelot.read_pdf(str(input_path), pages="all", flavor="stream")
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"No tables found in table area.*",
+                category=UserWarning,
+                module=r"camelot\..*",
+            )
+            tables = camelot.read_pdf(str(input_path), pages="all", flavor="stream")
     except Exception as exc:
         logger.warning("Camelot table extraction failed for %s: %s", input_path, exc)
         raise ConversionError("tool_failed") from exc
 
     usable_tables = [
-        table for table in tables
-        if table.df.shape[0] >= 2 and table.df.shape[1] >= 2
+        rows
+        for table in tables
+        if (rows := _normalized_table_rows(table.df.values.tolist())) is not None
     ]
     if not usable_tables:
         raise ConversionError("no_tables")
 
     workbook = Workbook()
     workbook.remove(workbook.active)
-    for index, table in enumerate(usable_tables, start=1):
+    for index, rows in enumerate(usable_tables, start=1):
         worksheet = workbook.create_sheet(title=f"Table {index}")
-        rows = table.df.fillna("").values.tolist()
         for row in rows:
-            worksheet.append([str(value) for value in row])
+            worksheet.append(row)
 
     workbook.save(output_path)
+
+
+def _normalized_table_rows(values: list[list[Any]]) -> list[list[str]] | None:
+    rows = [
+        [_table_cell_text(value) for value in row]
+        for row in values
+    ]
+    rows = [row for row in rows if any(row)]
+
+    # Camelot's stream parser can prepend a page title or table caption as a
+    # sparse single-cell row. Start at the first row that has tabular shape.
+    first_tabular_row = next(
+        (
+            index
+            for index, row in enumerate(rows)
+            if sum(bool(value) for value in row) >= 2
+        ),
+        None,
+    )
+    if first_tabular_row is None:
+        return None
+    rows = rows[first_tabular_row:]
+
+    if len(rows) < 2:
+        return None
+
+    column_count = max(len(row) for row in rows)
+    rows = [row + [""] * (column_count - len(row)) for row in rows]
+    populated_columns = [
+        index
+        for index in range(column_count)
+        if any(row[index] for row in rows)
+    ]
+    if len(populated_columns) < 2:
+        return None
+
+    normalized = [
+        [row[index] for index in populated_columns]
+        for row in rows
+    ]
+    populated_cells = sum(bool(value) for row in normalized for value in row)
+    return normalized if populated_cells >= 4 else None
+
+
+def _table_cell_text(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if value != value:
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
 
 
 def _convert_docx_to_pptx(input_path: Path, output_path: Path) -> None:
@@ -438,10 +530,7 @@ def _convert_docx_to_pptx(input_path: Path, output_path: Path) -> None:
         raise ConversionError("empty_output")
 
     presentation = Presentation()
-    has_heading_1 = any(
-        (paragraph.style.name if paragraph.style else "") == "Heading 1"
-        for paragraph in paragraphs
-    )
+    has_heading_1 = any(_is_heading_1(paragraph) for paragraph in paragraphs)
     if has_heading_1:
         _build_heading_slides(presentation, paragraphs)
     else:
@@ -467,9 +556,8 @@ def _build_heading_slides(presentation, paragraphs: list) -> None:
     current_body: list[str] = []
 
     for paragraph in paragraphs:
-        style_name = paragraph.style.name if paragraph.style else ""
         text = paragraph.text.strip()
-        if style_name == "Heading 1":
+        if _is_heading_1(paragraph):
             if current_title is not None:
                 _add_slide(presentation, current_title, current_body)
             current_title = text
@@ -490,3 +578,13 @@ def _build_chunked_slides(presentation, paragraphs: list, chunk_size: int = 5) -
         chunk = texts[index:index + chunk_size]
         title = f"Document Part {index // chunk_size + 1}"
         _add_slide(presentation, title, chunk)
+
+
+def _is_heading_1(paragraph: Any) -> bool:
+    style = getattr(paragraph, "style", None)
+    if style is None:
+        return False
+    return (
+        getattr(style, "style_id", "") == "Heading1"
+        or getattr(style, "name", "") == "Heading 1"
+    )
