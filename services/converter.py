@@ -465,6 +465,21 @@ def _normalized_table_rows(values: list[list[Any]]) -> list[list[str]] | None:
         for row in values
     ]
     rows = [row for row in rows if any(row)]
+
+    # Camelot's stream parser can prepend a page title or table caption as a
+    # sparse single-cell row. Start at the first row that has tabular shape.
+    first_tabular_row = next(
+        (
+            index
+            for index, row in enumerate(rows)
+            if sum(bool(value) for value in row) >= 2
+        ),
+        None,
+    )
+    if first_tabular_row is None:
+        return None
+    rows = rows[first_tabular_row:]
+
     if len(rows) < 2:
         return None
 

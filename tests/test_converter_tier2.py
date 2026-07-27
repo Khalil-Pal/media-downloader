@@ -58,13 +58,14 @@ def _make_text_pdf(path: Path) -> None:
 def _make_table_pdf(path: Path) -> None:
     document = fitz.open()
     page = document.new_page()
+    page.insert_text((72, 48), "Sandy Squirrel usage table", fontsize=14)
     rows = [
         ("Item", "Count", "Status"),
         ("Videos", "10", "Ready"),
         ("Audio", "7", "Ready"),
     ]
     for row_index, row in enumerate(rows):
-        y = 72 + row_index * 26
+        y = 90 + row_index * 26
         for x, value in zip((72, 220, 360), row):
             page.insert_text((x, y), value, fontsize=12)
     document.save(path)
@@ -125,9 +126,22 @@ class Tier2StaticTests(unittest.TestCase):
         self.assertIsNone(tier2_caveat_key("sample.docx", "pdf", DOCX_MIME))
         self.assertIsNone(tier2_caveat_key("sample.png", "jpg", "image/png"))
 
-    def test_table_normalization_rejects_near_empty_detections(self) -> None:
+    def test_table_normalization_drops_titles_and_rejects_noise(self) -> None:
         self.assertIsNone(_normalized_table_rows([["Title"], ["Body"]]))
         self.assertIsNone(_normalized_table_rows([["A", ""], ["", ""]]))
+        self.assertEqual(
+            _normalized_table_rows(
+                [
+                    ["Sandy Squirrel usage table", "", ""],
+                    ["Type", "Count", "Status"],
+                    ["Video", "10", "Ready"],
+                ]
+            ),
+            [
+                ["Type", "Count", "Status"],
+                ["Video", "10", "Ready"],
+            ],
+        )
         self.assertEqual(
             _normalized_table_rows(
                 [[float("nan"), "Name", "Count"], [None, "Video", "10"]]
