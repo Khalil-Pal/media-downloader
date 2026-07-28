@@ -14,6 +14,7 @@ os.environ.setdefault("BOT_TOKEN", "123456:test-token")
 from config.settings import settings
 from handlers import convert_handler, downloader_handler
 from handlers.menu import _my_plan_text
+from handlers.payment_handler import _plans_overview
 from services import db
 from services.downloader import DownloadResult, MediaInfo
 from services.payments import (
@@ -103,13 +104,52 @@ class PlanEnforcementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(PLANS["free"].duration_days, 2)
         self.assertEqual(PLANS["free"].daily_download_limit, 10)
         self.assertEqual(PLANS["free"].daily_conversion_limit, 3)
-        self.assertEqual(PLANS["free"].plan_priority, 0)
-        self.assertEqual(PLANS["annual"].plan_priority, 2)
         self.assertEqual(PLANS["starter_pack"].package_uses, 15)
         self.assertEqual(PLANS["pro_pack"].package_uses, 60)
         self.assertEqual(PLANS["ultra_pack"].package_uses, 150)
         self.assertEqual(PLANS["downloader_pro"].max_video_height, 1080)
         self.assertTrue(PLANS["downloader_pro"].playlist_support)
+        for plan in PLANS.values():
+            self.assertFalse(hasattr(plan, "plan_priority"))
+            self.assertFalse(hasattr(plan, "priority_level"))
+
+    async def test_plan_displays_have_no_priority_artifacts(self) -> None:
+        free_user = 2011
+        paid_user = 2012
+        await db.set_user_lang(free_user, "en")
+        await db.activate_user_plan(paid_user, PLANS["annual"])
+
+        forbidden_terms = {
+            "en": ("priority",),
+            "ar": ("أولوية", "الأولوية"),
+            "ru": ("приоритет",),
+        }
+        annual_endings = {
+            "en": "• All All-in-One features for one year\n\nUsage packages:",
+            "ar": "• كل ميزات All-in-One لمدة سنة كاملة\n\nباقات الاستخدام:",
+            "ru": "• Все функции All-in-One на один год\n\nПакеты использования:",
+        }
+
+        for language in ("en", "ar", "ru"):
+            translations = json.loads(
+                (PROJECT_ROOT / f"{language}.json").read_text(encoding="utf-8")
+            )
+            rendered = (
+                _plans_overview(language),
+                translations["menu_plans"],
+                await _my_plan_text(free_user, language),
+                await _my_plan_text(paid_user, language),
+            )
+            for text in rendered:
+                lowered = text.casefold()
+                for term in forbidden_terms[language]:
+                    self.assertNotIn(term.casefold(), lowered)
+                self.assertNotIn("{priority}", text)
+                self.assertNotIn("\n• \n", text)
+            self.assertIn(annual_endings[language], translations["menu_plans"])
+
+        details = await db.get_user_plan_details(paid_user)
+        self.assertNotIn("priority_level", details)
 
     async def test_free_daily_limit_and_lazy_reset(self) -> None:
         user_id = 2001
@@ -565,6 +605,10 @@ class PlanEnforcementTests(unittest.IsolatedAsyncioTestCase):
             "package_expires_at",
         ):
             self.assertIn(f"ADD COLUMN IF NOT EXISTS {column}", db_source)
+        self.assertIn(
+            "ALTER TABLE user_plans DROP COLUMN IF EXISTS priority_level",
+            db_source,
+        )
 
         payments_source = (PROJECT_ROOT / "services" / "payments.py").read_text(
             encoding="utf-8"

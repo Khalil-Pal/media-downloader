@@ -155,10 +155,12 @@ async def init_db() -> None:
                 unlimited_conversions   BOOLEAN NOT NULL,
                 downloads_remaining     INTEGER,
                 conversions_remaining   INTEGER,
-                priority_level          INTEGER NOT NULL,
                 is_active               BOOLEAN NOT NULL DEFAULT TRUE
             )
         """)
+        await conn.execute(
+            "ALTER TABLE user_plans DROP COLUMN IF EXISTS priority_level"
+        )
         await conn.execute("""
             UPDATE users
             SET plan_type = CASE
@@ -1257,7 +1259,6 @@ def _store_memory_user_plan(
         "downloads_remaining": None,
         "conversions_remaining": None,
         "package_uses_remaining": plan.package_uses,
-        "priority_level": plan.priority_level,
         "is_active": True,
     }
     _memory_user_plans[user_id] = row
@@ -1284,10 +1285,9 @@ async def _upsert_user_plan(
             unlimited_conversions,
             downloads_remaining,
             conversions_remaining,
-            priority_level,
             is_active
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, TRUE)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE)
         ON CONFLICT (user_id) DO UPDATE SET
             plan_key = EXCLUDED.plan_key,
             plan_name = EXCLUDED.plan_name,
@@ -1299,7 +1299,6 @@ async def _upsert_user_plan(
             unlimited_conversions = EXCLUDED.unlimited_conversions,
             downloads_remaining = EXCLUDED.downloads_remaining,
             conversions_remaining = EXCLUDED.conversions_remaining,
-            priority_level = EXCLUDED.priority_level,
             is_active = TRUE
         RETURNING *
     """,
@@ -1314,7 +1313,6 @@ async def _upsert_user_plan(
         plan.unlimited_conversions,
         None,
         None,
-        plan.priority_level,
     )
 
 

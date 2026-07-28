@@ -31,7 +31,6 @@ class Plan:
     max_file_size_mb: int
     allows_downloads: bool
     allows_conversions: bool
-    plan_priority: int
     daily_download_limit: int | None = None
     daily_conversion_limit: int | None = None
     package_uses: int | None = None
@@ -49,12 +48,6 @@ class Plan:
     def unlimited_conversions(self) -> bool:
         return self.plan_type == "subscription" and self.allows_conversions
 
-    @property
-    def priority_level(self) -> int:
-        """Compatibility name for existing plan display/storage code."""
-        return self.plan_priority
-
-
 PLANS: dict[str, Plan] = {
     "free": Plan(
         key="free",
@@ -65,7 +58,6 @@ PLANS: dict[str, Plan] = {
         max_file_size_mb=500,
         allows_downloads=True,
         allows_conversions=True,
-        plan_priority=0,
         daily_download_limit=10,
         daily_conversion_limit=3,
     ),
@@ -78,7 +70,6 @@ PLANS: dict[str, Plan] = {
         max_file_size_mb=2000,
         allows_downloads=True,
         allows_conversions=False,
-        plan_priority=1,
         max_video_height=1080,
         playlist_support=True,
     ),
@@ -91,7 +82,6 @@ PLANS: dict[str, Plan] = {
         max_file_size_mb=2000,
         allows_downloads=False,
         allows_conversions=True,
-        plan_priority=1,
     ),
     "all_in_one": Plan(
         key="all_in_one",
@@ -102,7 +92,6 @@ PLANS: dict[str, Plan] = {
         max_file_size_mb=2000,
         allows_downloads=True,
         allows_conversions=True,
-        plan_priority=1,
         max_video_height=1080,
         playlist_support=True,
     ),
@@ -115,7 +104,6 @@ PLANS: dict[str, Plan] = {
         max_file_size_mb=2000,
         allows_downloads=True,
         allows_conversions=True,
-        plan_priority=2,
         max_video_height=1080,
         playlist_support=True,
     ),
@@ -128,7 +116,6 @@ PLANS: dict[str, Plan] = {
         max_file_size_mb=500,
         allows_downloads=True,
         allows_conversions=True,
-        plan_priority=0,
         package_uses=15,
     ),
     "pro_pack": Plan(
@@ -140,7 +127,6 @@ PLANS: dict[str, Plan] = {
         max_file_size_mb=2000,
         allows_downloads=True,
         allows_conversions=True,
-        plan_priority=1,
         package_uses=60,
     ),
     "ultra_pack": Plan(
@@ -152,7 +138,6 @@ PLANS: dict[str, Plan] = {
         max_file_size_mb=2000,
         allows_downloads=True,
         allows_conversions=True,
-        plan_priority=1,
         package_uses=150,
     ),
 }

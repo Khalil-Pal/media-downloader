@@ -160,14 +160,6 @@ def _is_expired(plan_row: dict) -> bool:
     return expires_at <= datetime.now(expires_at.tzinfo or timezone.utc)
 
 
-def _priority_label(lang: str, priority_level: int) -> str:
-    if priority_level >= 2:
-        return t(lang, "priority_highest")
-    if priority_level == 1:
-        return t(lang, "priority_priority")
-    return t(lang, "priority_low")
-
-
 def _remaining_text(lang: str, plan_row: dict) -> str:
     if plan_row.get("plan_type") == "package":
         count = plan_row.get("package_uses_remaining") or 0
@@ -201,19 +193,11 @@ def _pending_payment_text(lang: str, payment: dict) -> str:
 async def _my_plan_text(user_id: int, lang: str) -> str:
     user_plan = await db.get_user_plan(user_id)
     if not user_plan or user_plan.get("plan_type") == "free":
-        return t(
-            lang,
-            "my_plan_free_details",
-            priority=_priority_label(lang, 0),
-        )
+        return t(lang, "my_plan_free_details")
 
     plan_row = await db.get_user_plan_details(user_id)
     if not plan_row:
-        return t(
-            lang,
-            "my_plan_free_details",
-            priority=_priority_label(lang, 0),
-        )
+        return t(lang, "my_plan_free_details")
 
     plan_row = dict(plan_row)
     if plan_row.get("plan_type") == "package":
@@ -231,7 +215,6 @@ async def _my_plan_text(user_id: int, lang: str) -> str:
         expires_at=_format_date(plan_row["expires_at"]),
         remaining=_remaining_text(lang, plan_row),
         max_file_size_mb=plan_row["max_file_size_mb"],
-        priority=_priority_label(lang, plan_row["priority_level"]),
     )
 
 
