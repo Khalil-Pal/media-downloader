@@ -15,9 +15,12 @@ from config.settings import settings
 from services import db
 from services.payments import (
     PAYMENT_PROOF_WINDOW_MINUTES,
+    PURCHASABLE_PLANS,
+    SUPPORTED_CURRENCIES,
+    get_plan,
+    get_plan_amount,
     payment_proof_request_is_active,
 )
-from services.plans import SUPPORTED_CURRENCIES, get_plan, get_plan_amount
 from services.user_store import get_user_lang_or_default, set_user_mode
 from utils.i18n import t
 
@@ -157,17 +160,9 @@ def _is_expired(plan_row: dict) -> bool:
     return expires_at <= datetime.now(expires_at.tzinfo or timezone.utc)
 
 
-def _priority_label(lang: str, priority_level: int) -> str:
-    if priority_level >= 2:
-        return t(lang, "priority_highest")
-    if priority_level == 1:
-        return t(lang, "priority_priority")
-    return t(lang, "priority_low")
-
-
 def _remaining_text(lang: str, plan_row: dict) -> str:
     if plan_row.get("plan_type") == "package":
-        count = plan_row.get("downloads_remaining") or 0
+        count = plan_row.get("package_uses_remaining") or 0
         return t(lang, "my_plan_remaining_package", count=count)
     if plan_row.get("unlimited_downloads") and plan_row.get("unlimited_conversions"):
         return t(lang, "my_plan_remaining_unlimited_all")
@@ -196,13 +191,20 @@ def _pending_payment_text(lang: str, payment: dict) -> str:
 
 
 async def _my_plan_text(user_id: int, lang: str) -> str:
+    user_plan = await db.get_user_plan(user_id)
+    if not user_plan or user_plan.get("plan_type") == "free":
+        return t(lang, "my_plan_free_details")
+
     plan_row = await db.get_user_plan_details(user_id)
-    if not plan_row or plan_row.get("plan_type") == "free":
-        return t(
-            lang,
-            "my_plan_free_details",
-            priority=_priority_label(lang, 0),
+    if not plan_row:
+        return t(lang, "my_plan_free_details")
+
+    plan_row = dict(plan_row)
+    if plan_row.get("plan_type") == "package":
+        plan_row["package_uses_remaining"] = user_plan.get(
+            "package_uses_remaining"
         )
+        plan_row["expires_at"] = user_plan.get("package_expires_at")
 
     status = t(lang, "plan_status_expired") if _is_expired(plan_row) else t(lang, "plan_status_active")
     return t(
@@ -213,7 +215,6 @@ async def _my_plan_text(user_id: int, lang: str) -> str:
         expires_at=_format_date(plan_row["expires_at"]),
         remaining=_remaining_text(lang, plan_row),
         max_file_size_mb=plan_row["max_file_size_mb"],
-        priority=_priority_label(lang, plan_row["priority_level"]),
     )
 
 
@@ -382,7 +383,7 @@ async def cb_plan_choice(callback: CallbackQuery) -> None:
         )
         return
 
-    plan = get_plan(plan_key)
+    plan = PURCHASABLE_PLANS.get(plan_key)
     if plan is None:
         await callback.message.answer(t(lang, "unknown_plan"))
         return
@@ -418,7 +419,7 @@ async def cb_payment_currency(callback: CallbackQuery) -> None:
         )
         return
 
-    plan = get_plan(plan_key)
+    plan = PURCHASABLE_PLANS.get(plan_key)
     amount = get_plan_amount(plan_key, currency)
     if plan is None or amount is None:
         await callback.message.answer(t(lang, "unknown_plan"))
@@ -528,7 +529,7 @@ async def cb_admin_payment_review(callback: CallbackQuery, bot: Bot) -> None:
         return
 
     if action == "approve":
-        plan = get_plan(payment["plan_key"])
+        plan = PURCHASABLE_PLANS.get(payment["plan_key"])
         if plan is None:
             await callback.answer(t("en", "unknown_plan"), show_alert=True)
             return

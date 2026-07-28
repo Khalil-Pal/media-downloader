@@ -150,6 +150,7 @@ class MediaInfo:
     duration_seconds: int | None = None
     thumbnail_url: str | None = None
     formats: list[str] = field(default_factory=list)
+    file_size_bytes: int | None = None
 
 
 @dataclass
@@ -644,15 +645,21 @@ async def fetch_info(url: str) -> MediaInfo:
         reverse=True,
     )
 
+    estimated_size = info.get("filesize") or info.get("filesize_approx")
     return MediaInfo(
         title=info.get("title", "Unknown"),
         uploader=info.get("uploader") or info.get("channel") or "Unknown",
         duration=format_duration(info.get("duration")),
         platform=info.get("extractor_key", "Unknown"),
-        file_size_str=format_size(info.get("filesize") or info.get("filesize_approx")),
+        file_size_str=format_size(estimated_size),
         duration_seconds=_duration_seconds(info.get("duration")),
         thumbnail_url=info.get("thumbnail"),
         formats=formats[:6],
+        file_size_bytes=(
+            int(estimated_size)
+            if isinstance(estimated_size, (int, float)) and estimated_size > 0
+            else None
+        ),
     )
 
 
@@ -710,6 +717,7 @@ async def download_media(
             file_size_str=format_size(actual_size),
             duration_seconds=_duration_seconds(info.get("duration")),
             thumbnail_url=info.get("thumbnail"),
+            file_size_bytes=actual_size,
         )
 
         completed_file = file_path

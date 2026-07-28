@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 
 import asyncpg
 
-from services.plans import Plan
+from services.plans import Plan, get_plan
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,27 @@ async def init_db() -> None:
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT")
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'free'")
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_expires_at TIMESTAMPTZ")
+        await conn.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_type TEXT NOT NULL DEFAULT 'free'"
+        )
+        await conn.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS downloads_today INTEGER NOT NULL DEFAULT 0"
+        )
+        await conn.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS conversions_today INTEGER NOT NULL DEFAULT 0"
+        )
+        await conn.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS usage_reset_at TIMESTAMPTZ"
+        )
+        await conn.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS free_started_at TIMESTAMPTZ"
+        )
+        await conn.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS package_uses_remaining INTEGER"
+        )
+        await conn.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS package_expires_at TIMESTAMPTZ"
+        )
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_ref TEXT")
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'none'")
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_currency TEXT")
@@ -134,10 +155,69 @@ async def init_db() -> None:
                 unlimited_conversions   BOOLEAN NOT NULL,
                 downloads_remaining     INTEGER,
                 conversions_remaining   INTEGER,
-                priority_level          INTEGER NOT NULL,
                 is_active               BOOLEAN NOT NULL DEFAULT TRUE
             )
         """)
+        await conn.execute(
+            "ALTER TABLE user_plans DROP COLUMN IF EXISTS priority_level"
+        )
+        await conn.execute("""
+            UPDATE users
+            SET plan_type = CASE
+                WHEN plan = 'free' THEN 'free'
+                WHEN plan IN ('starter_pack', 'pro_pack', 'ultra_pack')
+                    THEN 'package'
+                ELSE 'subscription'
+            END
+        """)
+        await conn.execute("""
+            UPDATE users AS users
+            SET downloads_today = GREATEST(
+                    0,
+                    10 - COALESCE(plans.downloads_remaining, 10)
+                ),
+                conversions_today = GREATEST(
+                    0,
+                    3 - COALESCE(plans.conversions_remaining, 3)
+                ),
+                usage_reset_at = plans.expires_at,
+                free_started_at = COALESCE(users.free_started_at, plans.starts_at)
+            FROM user_plans AS plans
+            WHERE users.user_id = plans.user_id
+              AND users.plan = 'free'
+              AND plans.plan_key = 'free_daily'
+        """)
+        # Legacy package columns were intended to mirror one balance. If they
+        # disagree, retain the larger value so migration never removes uses
+        # the customer may still have purchased.
+        await conn.execute("""
+            UPDATE users AS users
+            SET package_uses_remaining = COALESCE(
+                    users.package_uses_remaining,
+                    GREATEST(
+                        COALESCE(plans.downloads_remaining, 0),
+                        COALESCE(plans.conversions_remaining, 0)
+                    )
+                ),
+                package_expires_at = COALESCE(
+                    users.package_expires_at,
+                    users.plan_expires_at,
+                    plans.expires_at
+                ),
+                plan_expires_at = NULL
+            FROM user_plans AS plans
+            WHERE users.user_id = plans.user_id
+              AND users.plan_type = 'package'
+        """)
+        await conn.execute("""
+            UPDATE user_plans
+            SET downloads_remaining = NULL,
+                conversions_remaining = NULL
+            WHERE plan_type = 'package'
+        """)
+        await conn.execute(
+            "DELETE FROM user_plans WHERE plan_key = 'free_daily'"
+        )
 
     logger.info("PostgreSQL connected and tables ready.")
 
@@ -156,7 +236,14 @@ def _memory_register_user(user_id: int) -> dict[str, object | None]:
             "first_name": None,
             "last_name": None,
             "plan": "free",
+            "plan_type": "free",
             "plan_expires_at": None,
+            "downloads_today": 0,
+            "conversions_today": 0,
+            "usage_reset_at": None,
+            "free_started_at": None,
+            "package_uses_remaining": None,
+            "package_expires_at": None,
             "payment_ref": None,
             "payment_status": "none",
             "payment_currency": None,
@@ -349,7 +436,14 @@ async def get_user_plan(user_id: int) -> dict | None:
                 first_name,
                 last_name,
                 plan,
+                plan_type,
                 plan_expires_at,
+                downloads_today,
+                conversions_today,
+                usage_reset_at,
+                free_started_at,
+                package_uses_remaining,
+                package_expires_at,
                 payment_ref,
                 payment_status,
                 payment_currency,
@@ -362,15 +456,43 @@ async def get_user_plan(user_id: int) -> dict | None:
         return dict(row) if row else None
 
 
+def _plan_state_values(
+    plan_key: str,
+    expires_at: datetime | None,
+) -> tuple[str, datetime | None, int | None, datetime | None]:
+    definition = get_plan(plan_key)
+    plan_type = (
+        definition.plan_type
+        if definition is not None
+        else ("free" if plan_key == "free" else "subscription")
+    )
+    if plan_type == "package":
+        uses = definition.package_uses if definition else None
+        return plan_type, None, uses, expires_at
+    if plan_type == "subscription":
+        return plan_type, expires_at, None, None
+    return "free", None, None, None
+
+
 async def set_user_plan(
     user_id: int,
     plan: str,
     plan_expires_at: datetime | None,
 ) -> dict:
+    (
+        plan_type,
+        subscription_expires_at,
+        package_uses_remaining,
+        package_expires_at,
+    ) = _plan_state_values(plan, plan_expires_at)
+
     if not _ready():
         user = _memory_register_user(user_id)
         user["plan"] = plan
-        user["plan_expires_at"] = plan_expires_at
+        user["plan_type"] = plan_type
+        user["plan_expires_at"] = subscription_expires_at
+        user["package_uses_remaining"] = package_uses_remaining
+        user["package_expires_at"] = package_expires_at
         if plan == "free":
             user["payment_status"] = "none"
             user["payment_ref"] = None
@@ -389,7 +511,10 @@ async def set_user_plan(
                 INSERT INTO users (
                     user_id,
                     plan,
+                    plan_type,
                     plan_expires_at,
+                    package_uses_remaining,
+                    package_expires_at,
                     payment_ref,
                     payment_status,
                     payment_currency,
@@ -397,10 +522,16 @@ async def set_user_plan(
                     payment_requested_at,
                     payment_proof_requested_at
                 )
-                VALUES ($1, 'free', NULL, NULL, 'none', NULL, NULL, NULL, NULL)
+                VALUES (
+                    $1, 'free', 'free', NULL, NULL, NULL,
+                    NULL, 'none', NULL, NULL, NULL, NULL
+                )
                 ON CONFLICT (user_id) DO UPDATE SET
                     plan = 'free',
+                    plan_type = 'free',
                     plan_expires_at = NULL,
+                    package_uses_remaining = NULL,
+                    package_expires_at = NULL,
                     payment_ref = NULL,
                     payment_status = 'none',
                     payment_currency = NULL,
@@ -416,18 +547,146 @@ async def set_user_plan(
             INSERT INTO users (
                 user_id,
                 plan,
+                plan_type,
                 plan_expires_at,
+                package_uses_remaining,
+                package_expires_at,
                 payment_status
             )
-            VALUES ($1, $2, $3, 'confirmed')
+            VALUES ($1, $2, $3, $4, $5, $6, 'confirmed')
             ON CONFLICT (user_id) DO UPDATE SET
                 plan = EXCLUDED.plan,
+                plan_type = EXCLUDED.plan_type,
                 plan_expires_at = EXCLUDED.plan_expires_at,
+                package_uses_remaining = EXCLUDED.package_uses_remaining,
+                package_expires_at = EXCLUDED.package_expires_at,
                 payment_status = 'confirmed',
                 payment_proof_requested_at = NULL
             RETURNING *
-        """, user_id, plan, plan_expires_at)
+        """,
+            user_id,
+            plan,
+            plan_type,
+            subscription_expires_at,
+            package_uses_remaining,
+            package_expires_at,
+        )
         return dict(row)
+
+
+def _utc_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+async def prepare_free_usage_window(
+    user_id: int,
+    *,
+    now: datetime,
+    next_reset_at: datetime,
+) -> dict:
+    """Initialize the free trial and lazily reset its 24-hour counters."""
+    if not _ready():
+        user = _memory_register_user(user_id)
+        if not isinstance(user.get("free_started_at"), datetime):
+            user["free_started_at"] = now
+
+        reset_at = user.get("usage_reset_at")
+        reset_due = (
+            not isinstance(reset_at, datetime)
+            or _utc_datetime(reset_at) <= _utc_datetime(now)
+        )
+        if reset_due:
+            user["downloads_today"] = 0
+            user["conversions_today"] = 0
+            user["usage_reset_at"] = next_reset_at
+        return dict(user, user_id=user_id)
+
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            INSERT INTO users (
+                user_id,
+                free_started_at,
+                usage_reset_at,
+                downloads_today,
+                conversions_today
+            )
+            VALUES ($1, $2, $3, 0, 0)
+            ON CONFLICT (user_id) DO UPDATE SET
+                free_started_at = COALESCE(users.free_started_at, $2),
+                downloads_today = CASE
+                    WHEN users.usage_reset_at IS NULL
+                      OR users.usage_reset_at <= $2
+                    THEN 0
+                    ELSE users.downloads_today
+                END,
+                conversions_today = CASE
+                    WHEN users.usage_reset_at IS NULL
+                      OR users.usage_reset_at <= $2
+                    THEN 0
+                    ELSE users.conversions_today
+                END,
+                usage_reset_at = CASE
+                    WHEN users.usage_reset_at IS NULL
+                      OR users.usage_reset_at <= $2
+                    THEN $3
+                    ELSE users.usage_reset_at
+                END
+            RETURNING *
+        """, user_id, now, next_reset_at)
+        return dict(row)
+
+
+async def increment_free_usage(user_id: int, action: str) -> dict | None:
+    """Increment one persisted free-plan daily counter."""
+    column = {
+        "download": "downloads_today",
+        "conversion": "conversions_today",
+    }.get(action)
+    if column is None:
+        raise ValueError(f"Unsupported free usage action: {action}")
+
+    if not _ready():
+        user = _memory_users.get(user_id)
+        if not user or user.get("plan_type") != "free":
+            return None
+        user[column] = int(user.get(column) or 0) + 1
+        return dict(user, user_id=user_id)
+
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow(f"""
+            UPDATE users
+            SET {column} = {column} + 1
+            WHERE user_id = $1
+              AND plan_type = 'free'
+            RETURNING *
+        """, user_id)
+        return dict(row) if row else None
+
+
+async def decrement_package_usage(user_id: int) -> dict | None:
+    """Atomically consume one shared package use."""
+    if not _ready():
+        user = _memory_users.get(user_id)
+        if not user or user.get("plan_type") != "package":
+            return None
+        remaining = int(user.get("package_uses_remaining") or 0)
+        if remaining <= 0:
+            return None
+        user["package_uses_remaining"] = remaining - 1
+        return dict(user, user_id=user_id)
+
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            UPDATE users
+            SET package_uses_remaining = package_uses_remaining - 1
+            WHERE user_id = $1
+              AND plan_type = 'package'
+              AND package_uses_remaining > 0
+            RETURNING *
+        """, user_id)
+        return dict(row) if row else None
 
 
 async def get_pending_upgrade_payment_for_user(user_id: int) -> dict | None:
@@ -695,6 +954,13 @@ async def set_payment_confirmed(
     plan: str,
     plan_expires_at: datetime | None,
 ) -> dict | None:
+    (
+        plan_type,
+        subscription_expires_at,
+        package_uses_remaining,
+        package_expires_at,
+    ) = _plan_state_values(plan, plan_expires_at)
+
     if not _ready():
         for user_id, user in _memory_users.items():
             if (
@@ -702,7 +968,10 @@ async def set_payment_confirmed(
                 and user.get("payment_status") == "pending"
             ):
                 user["plan"] = plan
-                user["plan_expires_at"] = plan_expires_at
+                user["plan_type"] = plan_type
+                user["plan_expires_at"] = subscription_expires_at
+                user["package_uses_remaining"] = package_uses_remaining
+                user["package_expires_at"] = package_expires_at
                 user["payment_status"] = "confirmed"
                 user["payment_proof_requested_at"] = None
                 return dict(user, user_id=user_id)
@@ -712,13 +981,23 @@ async def set_payment_confirmed(
         row = await conn.fetchrow("""
             UPDATE users
             SET plan = $2,
-                plan_expires_at = $3,
+                plan_type = $3,
+                plan_expires_at = $4,
+                package_uses_remaining = $5,
+                package_expires_at = $6,
                 payment_status = 'confirmed',
                 payment_proof_requested_at = NULL
             WHERE payment_ref = $1
               AND payment_status = 'pending'
             RETURNING *
-        """, ref_code, plan, plan_expires_at)
+        """,
+            ref_code,
+            plan,
+            plan_type,
+            subscription_expires_at,
+            package_uses_remaining,
+            package_expires_at,
+        )
         return dict(row) if row else None
 
 
@@ -977,9 +1256,9 @@ def _store_memory_user_plan(
         "max_file_size_mb": plan.max_file_size_mb,
         "unlimited_downloads": plan.unlimited_downloads,
         "unlimited_conversions": plan.unlimited_conversions,
-        "downloads_remaining": plan.downloads_remaining,
-        "conversions_remaining": plan.conversions_remaining,
-        "priority_level": plan.priority_level,
+        "downloads_remaining": None,
+        "conversions_remaining": None,
+        "package_uses_remaining": plan.package_uses,
         "is_active": True,
     }
     _memory_user_plans[user_id] = row
@@ -1006,10 +1285,9 @@ async def _upsert_user_plan(
             unlimited_conversions,
             downloads_remaining,
             conversions_remaining,
-            priority_level,
             is_active
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, TRUE)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE)
         ON CONFLICT (user_id) DO UPDATE SET
             plan_key = EXCLUDED.plan_key,
             plan_name = EXCLUDED.plan_name,
@@ -1021,7 +1299,6 @@ async def _upsert_user_plan(
             unlimited_conversions = EXCLUDED.unlimited_conversions,
             downloads_remaining = EXCLUDED.downloads_remaining,
             conversions_remaining = EXCLUDED.conversions_remaining,
-            priority_level = EXCLUDED.priority_level,
             is_active = TRUE
         RETURNING *
     """,
@@ -1034,9 +1311,8 @@ async def _upsert_user_plan(
         plan.max_file_size_mb,
         plan.unlimited_downloads,
         plan.unlimited_conversions,
-        plan.downloads_remaining,
-        plan.conversions_remaining,
-        plan.priority_level,
+        None,
+        None,
     )
 
 
@@ -1047,6 +1323,12 @@ async def approve_upgrade_payment(
     """Confirm a pending upgrade and activate its plan as one operation."""
     starts_at = _now()
     expires_at = starts_at + timedelta(days=plan.duration_days)
+    (
+        plan_type,
+        subscription_expires_at,
+        package_uses_remaining,
+        package_expires_at,
+    ) = _plan_state_values(plan.key, expires_at)
 
     if not _ready():
         for user_id, user in _memory_users.items():
@@ -1056,7 +1338,10 @@ async def approve_upgrade_payment(
             ):
                 plan_row = _store_memory_user_plan(user_id, plan, starts_at, expires_at)
                 user["plan"] = plan.key
-                user["plan_expires_at"] = expires_at
+                user["plan_type"] = plan_type
+                user["plan_expires_at"] = subscription_expires_at
+                user["package_uses_remaining"] = package_uses_remaining
+                user["package_expires_at"] = package_expires_at
                 user["payment_status"] = "confirmed"
                 user["payment_proof_requested_at"] = None
                 return dict(user, user_id=user_id), dict(plan_row)
@@ -1067,13 +1352,23 @@ async def approve_upgrade_payment(
             user_row = await conn.fetchrow("""
                 UPDATE users
                 SET plan = $2,
-                    plan_expires_at = $3,
+                    plan_type = $3,
+                    plan_expires_at = $4,
+                    package_uses_remaining = $5,
+                    package_expires_at = $6,
                     payment_status = 'confirmed',
                     payment_proof_requested_at = NULL
                 WHERE payment_ref = $1
                   AND payment_status = 'pending'
                 RETURNING *
-            """, ref_code, plan.key, expires_at)
+            """,
+                ref_code,
+                plan.key,
+                plan_type,
+                subscription_expires_at,
+                package_uses_remaining,
+                package_expires_at,
+            )
             if user_row is None:
                 return None
 
@@ -1090,12 +1385,21 @@ async def approve_upgrade_payment(
 async def activate_user_plan(user_id: int, plan: Plan) -> dict:
     starts_at = _now()
     expires_at = starts_at + timedelta(days=plan.duration_days)
+    (
+        plan_type,
+        subscription_expires_at,
+        package_uses_remaining,
+        package_expires_at,
+    ) = _plan_state_values(plan.key, expires_at)
 
     if not _ready():
         row = _store_memory_user_plan(user_id, plan, starts_at, expires_at)
         user = _memory_register_user(user_id)
         user["plan"] = plan.key
-        user["plan_expires_at"] = expires_at
+        user["plan_type"] = plan_type
+        user["plan_expires_at"] = subscription_expires_at
+        user["package_uses_remaining"] = package_uses_remaining
+        user["package_expires_at"] = package_expires_at
         user["payment_status"] = "confirmed"
         user["payment_proof_requested_at"] = None
         return dict(row)
@@ -1107,16 +1411,29 @@ async def activate_user_plan(user_id: int, plan: Plan) -> dict:
                 INSERT INTO users (
                     user_id,
                     plan,
+                    plan_type,
                     plan_expires_at,
+                    package_uses_remaining,
+                    package_expires_at,
                     payment_status
                 )
-                VALUES ($1, $2, $3, 'confirmed')
+                VALUES ($1, $2, $3, $4, $5, $6, 'confirmed')
                 ON CONFLICT (user_id) DO UPDATE SET
                     plan = EXCLUDED.plan,
+                    plan_type = EXCLUDED.plan_type,
                     plan_expires_at = EXCLUDED.plan_expires_at,
+                    package_uses_remaining = EXCLUDED.package_uses_remaining,
+                    package_expires_at = EXCLUDED.package_expires_at,
                     payment_status = 'confirmed',
                     payment_proof_requested_at = NULL
-            """, user_id, plan.key, expires_at)
+            """,
+                user_id,
+                plan.key,
+                plan_type,
+                subscription_expires_at,
+                package_uses_remaining,
+                package_expires_at,
+            )
             return dict(row)
 
 
@@ -1130,175 +1447,6 @@ async def get_user_plan_details(user_id: int) -> dict | None:
             "SELECT * FROM user_plans WHERE user_id = $1",
             user_id,
         )
-        return dict(row) if row else None
-
-
-async def get_or_create_free_daily_usage(
-    user_id: int,
-    starts_at: datetime,
-    expires_at: datetime,
-    download_limit: int,
-    conversion_limit: int,
-    max_file_size_mb: int,
-) -> dict:
-    """Return today's persisted free allowance, resetting it on a new UTC day."""
-    if not _ready():
-        _memory_register_user(user_id)
-        plan = _memory_user_plans.get(user_id)
-        if (
-            not plan
-            or plan.get("plan_key") != "free_daily"
-            or plan.get("starts_at") != starts_at
-            or not plan.get("is_active")
-        ):
-            plan = {
-                "user_id": user_id,
-                "plan_key": "free_daily",
-                "plan_name": "Free Plan - Starter",
-                "plan_type": "free",
-                "starts_at": starts_at,
-                "expires_at": expires_at,
-                "max_file_size_mb": max_file_size_mb,
-                "unlimited_downloads": False,
-                "unlimited_conversions": False,
-                "downloads_remaining": download_limit,
-                "conversions_remaining": conversion_limit,
-                "priority_level": 0,
-                "is_active": True,
-            }
-            _memory_user_plans[user_id] = plan
-        return dict(plan)
-
-    async with _pool.acquire() as conn:
-        row = await conn.fetchrow("""
-            INSERT INTO user_plans (
-                user_id,
-                plan_key,
-                plan_name,
-                plan_type,
-                starts_at,
-                expires_at,
-                max_file_size_mb,
-                unlimited_downloads,
-                unlimited_conversions,
-                downloads_remaining,
-                conversions_remaining,
-                priority_level,
-                is_active
-            )
-            VALUES (
-                $1, 'free_daily', 'Free Plan - Starter', 'free',
-                $2, $3, $4, FALSE, FALSE, $5, $6, 0, TRUE
-            )
-            ON CONFLICT (user_id) DO UPDATE SET
-                plan_key = EXCLUDED.plan_key,
-                plan_name = EXCLUDED.plan_name,
-                plan_type = EXCLUDED.plan_type,
-                starts_at = EXCLUDED.starts_at,
-                expires_at = EXCLUDED.expires_at,
-                max_file_size_mb = EXCLUDED.max_file_size_mb,
-                unlimited_downloads = FALSE,
-                unlimited_conversions = FALSE,
-                downloads_remaining = EXCLUDED.downloads_remaining,
-                conversions_remaining = EXCLUDED.conversions_remaining,
-                priority_level = 0,
-                is_active = TRUE
-            WHERE user_plans.plan_key <> 'free_daily'
-               OR user_plans.starts_at <> EXCLUDED.starts_at
-               OR user_plans.is_active = FALSE
-            RETURNING *
-        """,
-            user_id,
-            starts_at,
-            expires_at,
-            max_file_size_mb,
-            download_limit,
-            conversion_limit,
-        )
-        if row is None:
-            row = await conn.fetchrow(
-                "SELECT * FROM user_plans WHERE user_id = $1",
-                user_id,
-            )
-        return dict(row)
-
-
-async def consume_free_daily_usage(
-    user_id: int,
-    operation: str,
-    starts_at: datetime,
-) -> dict | None:
-    """Atomically consume one download or conversion from today's free allowance."""
-    column = {
-        "download": "downloads_remaining",
-        "conversion": "conversions_remaining",
-    }.get(operation)
-    if column is None:
-        raise ValueError(f"Unsupported free usage operation: {operation}")
-
-    if not _ready():
-        plan = _memory_user_plans.get(user_id)
-        if (
-            not plan
-            or plan.get("plan_key") != "free_daily"
-            or plan.get("starts_at") != starts_at
-            or not plan.get("is_active")
-        ):
-            return None
-
-        remaining = int(plan.get(column) or 0)
-        if remaining <= 0:
-            return None
-        plan[column] = remaining - 1
-        return dict(plan)
-
-    async with _pool.acquire() as conn:
-        row = await conn.fetchrow(f"""
-            UPDATE user_plans
-            SET {column} = {column} - 1
-            WHERE user_id = $1
-              AND plan_key = 'free_daily'
-              AND starts_at = $2
-              AND expires_at > NOW()
-              AND is_active = TRUE
-              AND {column} > 0
-            RETURNING *
-        """, user_id, starts_at)
-        return dict(row) if row else None
-
-
-async def consume_package_usage(user_id: int) -> dict | None:
-    """Consume one shared download-or-conversion credit from a package."""
-    if not _ready():
-        plan = _memory_user_plans.get(user_id)
-        if (
-            not plan
-            or plan.get("plan_type") != "package"
-            or not plan.get("is_active")
-        ):
-            return None
-
-        downloads = int(plan.get("downloads_remaining") or 0)
-        conversions = int(plan.get("conversions_remaining") or 0)
-        if min(downloads, conversions) <= 0:
-            return None
-
-        plan["downloads_remaining"] = downloads - 1
-        plan["conversions_remaining"] = conversions - 1
-        return dict(plan)
-
-    async with _pool.acquire() as conn:
-        row = await conn.fetchrow("""
-            UPDATE user_plans
-            SET downloads_remaining = downloads_remaining - 1,
-                conversions_remaining = conversions_remaining - 1
-            WHERE user_id = $1
-              AND plan_type = 'package'
-              AND is_active = TRUE
-              AND downloads_remaining > 0
-              AND conversions_remaining > 0
-            RETURNING *
-        """, user_id)
         return dict(row) if row else None
 
 

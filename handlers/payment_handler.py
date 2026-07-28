@@ -13,8 +13,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from config.settings import settings
 from services import db
 from services.payments import (
-    PLANS,
     PAYMENT_PROOF_WINDOW_MINUTES,
+    PURCHASABLE_PLANS,
     SUPPORTED_CURRENCIES,
     generate_reference_code,
     get_plan,
@@ -94,7 +94,7 @@ def _format_date(value) -> str:
 
 def upgrade_plans_keyboard(lang: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    for plan in PLANS.values():
+    for plan in PURCHASABLE_PLANS.values():
         builder.button(
             text=t(lang, "upgrade_btn_plan", plan_name=plan.name),
             callback_data=f"upgrade:plan:{plan.key}",
@@ -105,7 +105,7 @@ def upgrade_plans_keyboard(lang: str) -> InlineKeyboardMarkup:
 
 def upgrade_currency_keyboard(lang: str, plan_key: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    plan = get_plan(plan_key)
+    plan = PURCHASABLE_PLANS.get(plan_key)
     if plan is None:
         return builder.as_markup()
 
@@ -157,7 +157,7 @@ def legacy_payment_proof_keyboard(
 
 def _plans_overview(lang: str) -> str:
     lines = [t(lang, "upgrade_choose_plan")]
-    for plan in PLANS.values():
+    for plan in PURCHASABLE_PLANS.values():
         prices = " / ".join(plan.prices[currency] for currency in SUPPORTED_CURRENCIES)
         lines.append(
             t(
@@ -328,7 +328,7 @@ async def cb_upgrade_plan(callback: CallbackQuery) -> None:
 
     lang = await get_user_lang_or_default(callback.from_user.id)
     plan_key = (callback.data or "").split(":", 2)[2]
-    plan = get_plan(plan_key)
+    plan = PURCHASABLE_PLANS.get(plan_key)
     if plan is None:
         await callback.message.answer(t(lang, "unknown_plan"), parse_mode=None)
         return
@@ -361,7 +361,7 @@ async def cb_upgrade_currency(callback: CallbackQuery) -> None:
         return
 
     _, _, plan_key, currency = parts
-    plan = get_plan(plan_key)
+    plan = PURCHASABLE_PLANS.get(plan_key)
     amount = plan_price(plan_key, currency)
     if plan is None or amount is None:
         await callback.message.answer(t(lang, "unknown_plan"), parse_mode=None)
@@ -494,7 +494,7 @@ async def cmd_approve_payment(message: Message, bot: Bot) -> None:
         return
 
     plan_key = str(pending.get("payment_plan") or "")
-    plan = get_plan(plan_key)
+    plan = PURCHASABLE_PLANS.get(plan_key)
     if plan is None:
         await message.answer(t("en", "unknown_plan"), parse_mode=None)
         return
