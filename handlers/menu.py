@@ -197,7 +197,7 @@ def _pending_payment_text(lang: str, payment: dict) -> str:
 
 async def _my_plan_text(user_id: int, lang: str) -> str:
     plan_row = await db.get_user_plan_details(user_id)
-    if not plan_row:
+    if not plan_row or plan_row.get("plan_type") == "free":
         return t(
             lang,
             "my_plan_free_details",

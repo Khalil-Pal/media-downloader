@@ -1133,6 +1133,175 @@ async def get_user_plan_details(user_id: int) -> dict | None:
         return dict(row) if row else None
 
 
+async def get_or_create_free_daily_usage(
+    user_id: int,
+    starts_at: datetime,
+    expires_at: datetime,
+    download_limit: int,
+    conversion_limit: int,
+    max_file_size_mb: int,
+) -> dict:
+    """Return today's persisted free allowance, resetting it on a new UTC day."""
+    if not _ready():
+        _memory_register_user(user_id)
+        plan = _memory_user_plans.get(user_id)
+        if (
+            not plan
+            or plan.get("plan_key") != "free_daily"
+            or plan.get("starts_at") != starts_at
+            or not plan.get("is_active")
+        ):
+            plan = {
+                "user_id": user_id,
+                "plan_key": "free_daily",
+                "plan_name": "Free Plan - Starter",
+                "plan_type": "free",
+                "starts_at": starts_at,
+                "expires_at": expires_at,
+                "max_file_size_mb": max_file_size_mb,
+                "unlimited_downloads": False,
+                "unlimited_conversions": False,
+                "downloads_remaining": download_limit,
+                "conversions_remaining": conversion_limit,
+                "priority_level": 0,
+                "is_active": True,
+            }
+            _memory_user_plans[user_id] = plan
+        return dict(plan)
+
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            INSERT INTO user_plans (
+                user_id,
+                plan_key,
+                plan_name,
+                plan_type,
+                starts_at,
+                expires_at,
+                max_file_size_mb,
+                unlimited_downloads,
+                unlimited_conversions,
+                downloads_remaining,
+                conversions_remaining,
+                priority_level,
+                is_active
+            )
+            VALUES (
+                $1, 'free_daily', 'Free Plan - Starter', 'free',
+                $2, $3, $4, FALSE, FALSE, $5, $6, 0, TRUE
+            )
+            ON CONFLICT (user_id) DO UPDATE SET
+                plan_key = EXCLUDED.plan_key,
+                plan_name = EXCLUDED.plan_name,
+                plan_type = EXCLUDED.plan_type,
+                starts_at = EXCLUDED.starts_at,
+                expires_at = EXCLUDED.expires_at,
+                max_file_size_mb = EXCLUDED.max_file_size_mb,
+                unlimited_downloads = FALSE,
+                unlimited_conversions = FALSE,
+                downloads_remaining = EXCLUDED.downloads_remaining,
+                conversions_remaining = EXCLUDED.conversions_remaining,
+                priority_level = 0,
+                is_active = TRUE
+            WHERE user_plans.plan_key <> 'free_daily'
+               OR user_plans.starts_at <> EXCLUDED.starts_at
+               OR user_plans.is_active = FALSE
+            RETURNING *
+        """,
+            user_id,
+            starts_at,
+            expires_at,
+            max_file_size_mb,
+            download_limit,
+            conversion_limit,
+        )
+        if row is None:
+            row = await conn.fetchrow(
+                "SELECT * FROM user_plans WHERE user_id = $1",
+                user_id,
+            )
+        return dict(row)
+
+
+async def consume_free_daily_usage(
+    user_id: int,
+    operation: str,
+    starts_at: datetime,
+) -> dict | None:
+    """Atomically consume one download or conversion from today's free allowance."""
+    column = {
+        "download": "downloads_remaining",
+        "conversion": "conversions_remaining",
+    }.get(operation)
+    if column is None:
+        raise ValueError(f"Unsupported free usage operation: {operation}")
+
+    if not _ready():
+        plan = _memory_user_plans.get(user_id)
+        if (
+            not plan
+            or plan.get("plan_key") != "free_daily"
+            or plan.get("starts_at") != starts_at
+            or not plan.get("is_active")
+        ):
+            return None
+
+        remaining = int(plan.get(column) or 0)
+        if remaining <= 0:
+            return None
+        plan[column] = remaining - 1
+        return dict(plan)
+
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow(f"""
+            UPDATE user_plans
+            SET {column} = {column} - 1
+            WHERE user_id = $1
+              AND plan_key = 'free_daily'
+              AND starts_at = $2
+              AND expires_at > NOW()
+              AND is_active = TRUE
+              AND {column} > 0
+            RETURNING *
+        """, user_id, starts_at)
+        return dict(row) if row else None
+
+
+async def consume_package_usage(user_id: int) -> dict | None:
+    """Consume one shared download-or-conversion credit from a package."""
+    if not _ready():
+        plan = _memory_user_plans.get(user_id)
+        if (
+            not plan
+            or plan.get("plan_type") != "package"
+            or not plan.get("is_active")
+        ):
+            return None
+
+        downloads = int(plan.get("downloads_remaining") or 0)
+        conversions = int(plan.get("conversions_remaining") or 0)
+        if min(downloads, conversions) <= 0:
+            return None
+
+        plan["downloads_remaining"] = downloads - 1
+        plan["conversions_remaining"] = conversions - 1
+        return dict(plan)
+
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            UPDATE user_plans
+            SET downloads_remaining = downloads_remaining - 1,
+                conversions_remaining = conversions_remaining - 1
+            WHERE user_id = $1
+              AND plan_type = 'package'
+              AND is_active = TRUE
+              AND downloads_remaining > 0
+              AND conversions_remaining > 0
+            RETURNING *
+        """, user_id)
+        return dict(row) if row else None
+
+
 async def close_db() -> None:
     global _pool
     if _pool:
