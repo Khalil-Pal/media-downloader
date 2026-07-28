@@ -67,7 +67,7 @@ class Settings:
     # Override with MAX_FILE_SIZE_MB in your .env if you need a lower cap.
     max_file_size_mb: int = field(default_factory=lambda: _int("MAX_FILE_SIZE_MB", 2000))
     max_convert_file_size_mb: int = field(
-        default_factory=lambda: _int("MAX_CONVERT_FILE_SIZE_MB", 200)
+        default_factory=lambda: _int("MAX_CONVERT_FILE_SIZE_MB", 2000)
     )
     download_path: Path = field(
         default_factory=lambda: Path(os.getenv("DOWNLOAD_PATH", "./temp_downloads"))

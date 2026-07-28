@@ -37,6 +37,7 @@ from middlewares import UserProfileMiddleware
 from services import db
 from services.payments import (
     PLANS,
+    PURCHASABLE_PLANS,
     generate_reference_code,
     plan_price,
     user_has_active_plan,
@@ -128,7 +129,10 @@ class UpgradeFlowTests(unittest.IsolatedAsyncioTestCase):
 
         text, kwargs = message.answer.await_args.args[0], message.answer.await_args.kwargs
         self.assertIn("Choose a plan", text)
-        self.assertEqual(len(kwargs["reply_markup"].inline_keyboard), len(PLANS))
+        self.assertEqual(
+            len(kwargs["reply_markup"].inline_keyboard),
+            len(PURCHASABLE_PLANS),
+        )
 
         callback = _callback(user_id, "upgrade:currency:all_in_one:USD")
         await cb_upgrade_currency(callback)
@@ -208,7 +212,10 @@ class UpgradeFlowTests(unittest.IsolatedAsyncioTestCase):
         reopened_text = cancel_callback.message.answer.await_args.args[0]
         reopened_markup = cancel_callback.message.answer.await_args.kwargs["reply_markup"]
         self.assertIn("Choose a plan", reopened_text)
-        self.assertEqual(len(reopened_markup.inline_keyboard), len(PLANS))
+        self.assertEqual(
+            len(reopened_markup.inline_keyboard),
+            len(PURCHASABLE_PLANS),
+        )
 
         choose_new = _callback(
             user_id,
@@ -736,7 +743,10 @@ class UpgradeStaticTests(unittest.TestCase):
                     9223372036854775807,
                 ),
             ]
-            markups.extend(upgrade_currency_keyboard(lang, key) for key in PLANS)
+            markups.extend(
+                upgrade_currency_keyboard(lang, key)
+                for key in PURCHASABLE_PLANS
+            )
             for markup in markups:
                 for row in markup.inline_keyboard:
                     for button in row:

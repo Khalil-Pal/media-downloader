@@ -1,4 +1,4 @@
-"""Manual upgrade/payment helpers for Sandy Squirrel."""
+"""Plan catalog, entitlement checks, and manual-payment helpers."""
 from __future__ import annotations
 
 import logging
@@ -6,48 +6,180 @@ import secrets
 import string
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 from config.settings import settings
-from services.plans import PLANS as _PLAN_CATALOG
-from services.plans import Plan as UpgradePlan
 
 logger = logging.getLogger(__name__)
 
+Action = Literal["download", "conversion"]
 REFERENCE_ALPHABET = string.ascii_uppercase + string.digits
-SUPPORTED_CURRENCIES = ("RUB", "USD", "ILS")
+SUPPORTED_CURRENCIES = ("USD", "ILS", "RUB")
 PAYMENT_PROOF_WINDOW_MINUTES = 30
 PAYMENT_PROOF_WINDOW = timedelta(minutes=PAYMENT_PROOF_WINDOW_MINUTES)
-FREE_DAILY_LIMITS = {"download": 10, "conversion": 3}
-FREE_MAX_FILE_SIZE_MB = 500
-
-# Keep one source of truth for prices, durations, and plan capabilities.
-PLANS: dict[str, UpgradePlan] = dict(_PLAN_CATALOG)
 
 
 @dataclass(frozen=True)
-class PlanAccess:
-    allowed: bool
-    operation: str
-    plan_key: str
+class Plan:
+    """One source of truth for every plan capability and limit."""
+
+    key: str
+    name: str
+    plan_type: Literal["free", "subscription", "package"]
+    duration_days: int
+    prices: dict[str, str]
     max_file_size_mb: int
-    message_key: str | None = None
-    daily_limit: int | None = None
+    allows_downloads: bool
+    allows_conversions: bool
+    plan_priority: int
+    daily_download_limit: int | None = None
+    daily_conversion_limit: int | None = None
+    package_uses: int | None = None
+
+    # Reserved metadata only. Actual 1080p/playlist enforcement belongs in
+    # quality selection and services/downloader.py once that feature is built.
+    max_video_height: int | None = None
+    playlist_support: bool = False
+
+    @property
+    def unlimited_downloads(self) -> bool:
+        return self.plan_type == "subscription" and self.allows_downloads
+
+    @property
+    def unlimited_conversions(self) -> bool:
+        return self.plan_type == "subscription" and self.allows_conversions
+
+    @property
+    def priority_level(self) -> int:
+        """Compatibility name for existing plan display/storage code."""
+        return self.plan_priority
 
 
-def get_plan(plan_key: str) -> UpgradePlan | None:
+PLANS: dict[str, Plan] = {
+    "free": Plan(
+        key="free",
+        name="Free Plan - Starter",
+        plan_type="free",
+        duration_days=2,
+        prices={},
+        max_file_size_mb=500,
+        allows_downloads=True,
+        allows_conversions=True,
+        plan_priority=0,
+        daily_download_limit=10,
+        daily_conversion_limit=3,
+    ),
+    "downloader_pro": Plan(
+        key="downloader_pro",
+        name="Downloader Pro",
+        plan_type="subscription",
+        duration_days=30,
+        prices={"USD": "$1.99", "ILS": "₪7", "RUB": "₽200"},
+        max_file_size_mb=2000,
+        allows_downloads=True,
+        allows_conversions=False,
+        plan_priority=1,
+        max_video_height=1080,
+        playlist_support=True,
+    ),
+    "converter_pro": Plan(
+        key="converter_pro",
+        name="Converter Pro",
+        plan_type="subscription",
+        duration_days=30,
+        prices={"USD": "$1.99", "ILS": "₪7", "RUB": "₽200"},
+        max_file_size_mb=2000,
+        allows_downloads=False,
+        allows_conversions=True,
+        plan_priority=1,
+    ),
+    "all_in_one": Plan(
+        key="all_in_one",
+        name="All-in-One Pro",
+        plan_type="subscription",
+        duration_days=30,
+        prices={"USD": "$2.99", "ILS": "₪11", "RUB": "₽300"},
+        max_file_size_mb=2000,
+        allows_downloads=True,
+        allows_conversions=True,
+        plan_priority=1,
+        max_video_height=1080,
+        playlist_support=True,
+    ),
+    "annual": Plan(
+        key="annual",
+        name="Annual All-in-One",
+        plan_type="subscription",
+        duration_days=365,
+        prices={"USD": "$29.99", "ILS": "₪110", "RUB": "₽3000"},
+        max_file_size_mb=2000,
+        allows_downloads=True,
+        allows_conversions=True,
+        plan_priority=2,
+        max_video_height=1080,
+        playlist_support=True,
+    ),
+    "starter_pack": Plan(
+        key="starter_pack",
+        name="Starter Pack",
+        plan_type="package",
+        duration_days=30,
+        prices={"USD": "$1.50", "ILS": "₪5", "RUB": "₽150"},
+        max_file_size_mb=500,
+        allows_downloads=True,
+        allows_conversions=True,
+        plan_priority=0,
+        package_uses=15,
+    ),
+    "pro_pack": Plan(
+        key="pro_pack",
+        name="Pro Pack",
+        plan_type="package",
+        duration_days=60,
+        prices={"USD": "$4.99", "ILS": "₪18", "RUB": "₽500"},
+        max_file_size_mb=2000,
+        allows_downloads=True,
+        allows_conversions=True,
+        plan_priority=1,
+        package_uses=60,
+    ),
+    "ultra_pack": Plan(
+        key="ultra_pack",
+        name="Ultra Pack",
+        plan_type="package",
+        duration_days=90,
+        prices={"USD": "$9.99", "ILS": "₪36", "RUB": "₽1000"},
+        max_file_size_mb=2000,
+        allows_downloads=True,
+        allows_conversions=True,
+        plan_priority=1,
+        package_uses=150,
+    ),
+}
+
+PURCHASABLE_PLANS: dict[str, Plan] = {
+    key: plan for key, plan in PLANS.items() if plan.plan_type != "free"
+}
+
+
+def get_plan(plan_key: str) -> Plan | None:
     return PLANS.get(plan_key)
+
+
+def get_plan_amount(plan_key: str, currency: str) -> str | None:
+    plan = get_plan(plan_key)
+    if plan is None:
+        return None
+    return plan.prices.get(currency)
+
+
+def plan_price(plan_key: str, currency: str) -> str | None:
+    return get_plan_amount(plan_key, currency)
 
 
 def generate_reference_code(user_id: int) -> str:
     suffix = "".join(secrets.choice(REFERENCE_ALPHABET) for _ in range(4))
     return f"SSB-{user_id}-{suffix}"
-
-
-def plan_price(plan_key: str, currency: str) -> str | None:
-    plan = get_plan(plan_key)
-    if plan is None:
-        return None
-    return plan.prices.get(currency)
 
 
 def payment_proof_request_is_active(requested_at: object) -> bool:
@@ -59,225 +191,155 @@ def payment_proof_request_is_active(requested_at: object) -> bool:
     return timedelta(0) <= age <= PAYMENT_PROOF_WINDOW
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _plan_allows(plan: Plan, action: Action) -> bool:
+    return plan.allows_downloads if action == "download" else plan.allows_conversions
+
+
+def _file_exceeds_plan(plan: Plan, file_size_bytes: int | None) -> bool:
+    if file_size_bytes is None:
+        return False
+    return file_size_bytes > plan.max_file_size_mb * 1024 * 1024
+
+
 async def user_has_active_plan(user_id: int) -> bool:
-    """Return True for active paid users and lazily downgrade expired users."""
+    """Return True for active paid plans and lazily downgrade expired plans."""
     from services import db
 
     row = await db.get_user_plan(user_id)
     if not row or row.get("plan") == "free":
         return False
 
-    expires_at = row.get("plan_expires_at")
+    plan = get_plan(str(row.get("plan") or ""))
+    plan_type = str(row.get("plan_type") or (plan.plan_type if plan else ""))
+    expires_at = (
+        row.get("package_expires_at")
+        if plan_type == "package"
+        else row.get("plan_expires_at")
+    )
     if expires_at is None:
         return True
-
-    if isinstance(expires_at, datetime):
-        now = datetime.now(expires_at.tzinfo or timezone.utc)
-        if expires_at > now:
-            return True
+    if isinstance(expires_at, datetime) and _as_utc(expires_at) > datetime.now(timezone.utc):
+        return True
 
     await db.set_user_plan(user_id, "free", None)
     return False
 
 
-def _validate_operation(operation: str) -> None:
-    if operation not in FREE_DAILY_LIMITS:
-        raise ValueError(f"Unsupported plan operation: {operation}")
+async def check_usage_allowed(
+    user_id: int,
+    action: Action,
+    file_size_bytes: int | None = None,
+) -> tuple[bool, str | None]:
+    """Apply every plan rule and return a translated denial reason key."""
+    from services import db
 
+    if action not in ("download", "conversion"):
+        raise ValueError(f"Unsupported usage action: {action}")
+    if settings.admin_id and user_id == settings.admin_id:
+        return True, None
 
-def _free_day_bounds() -> tuple[datetime, datetime]:
+    row = await db.get_user_plan(user_id)
+    if row is None:
+        await db.register_user(user_id)
+        row = await db.get_user_plan(user_id)
+
+    plan_key = str((row or {}).get("plan") or "free")
+    plan = get_plan(plan_key)
+    if plan is None:
+        return False, "plan_upgrade_required"
+    plan_type = str((row or {}).get("plan_type") or plan.plan_type)
     now = datetime.now(timezone.utc)
-    starts_at = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return starts_at, starts_at + timedelta(days=1)
 
-
-async def check_plan_access(user_id: int, operation: str) -> PlanAccess:
-    """Return the user's current entitlement without consuming usage.
-
-    The free tier follows the limits already advertised in the Plans menu:
-    10 downloads and 3 conversions per UTC day, with a 500 MB file limit.
-    """
-    from services import db
-
-    _validate_operation(operation)
-    if settings.admin_id and user_id == settings.admin_id:
-        return PlanAccess(
-            allowed=True,
-            operation=operation,
-            plan_key="admin",
-            max_file_size_mb=max(
-                settings.max_file_size_mb,
-                settings.max_convert_file_size_mb,
-            ),
-        )
-
-    user = await db.get_user_plan(user_id)
-    previous_plan = str((user or {}).get("plan") or "free")
-    was_paid = previous_plan != "free"
-    has_active_paid_plan = await user_has_active_plan(user_id)
-
-    if was_paid and not has_active_paid_plan:
-        return PlanAccess(
-            allowed=False,
-            operation=operation,
-            plan_key=previous_plan,
-            max_file_size_mb=FREE_MAX_FILE_SIZE_MB,
-            message_key="plan_expired",
-        )
-
-    if not has_active_paid_plan:
-        daily_limit = FREE_DAILY_LIMITS[operation]
-        starts_at, expires_at = _free_day_bounds()
-        usage = await db.get_or_create_free_daily_usage(
-            user_id=user_id,
-            starts_at=starts_at,
-            expires_at=expires_at,
-            download_limit=FREE_DAILY_LIMITS["download"],
-            conversion_limit=FREE_DAILY_LIMITS["conversion"],
-            max_file_size_mb=FREE_MAX_FILE_SIZE_MB,
-        )
-        remaining_key = (
-            "downloads_remaining"
-            if operation == "download"
-            else "conversions_remaining"
-        )
-        remaining = int(usage.get(remaining_key) or 0)
-        return PlanAccess(
-            allowed=remaining > 0,
-            operation=operation,
-            plan_key="free",
-            max_file_size_mb=FREE_MAX_FILE_SIZE_MB,
-            message_key=(
-                None
-                if remaining > 0
-                else f"plan_free_{operation}_limit_reached"
-            ),
-            daily_limit=daily_limit,
-        )
-
-    details = await db.get_user_plan_details(user_id)
-    catalog_plan = get_plan(previous_plan)
-    if details is None and catalog_plan is None:
-        return PlanAccess(
-            allowed=False,
-            operation=operation,
-            plan_key=previous_plan,
-            max_file_size_mb=FREE_MAX_FILE_SIZE_MB,
-            message_key="plan_upgrade_required",
-        )
-
-    max_file_size_mb = int(
-        (details or {}).get("max_file_size_mb")
-        or (catalog_plan.max_file_size_mb if catalog_plan else FREE_MAX_FILE_SIZE_MB)
-    )
-    unlimited_key = (
-        "unlimited_downloads"
-        if operation == "download"
-        else "unlimited_conversions"
-    )
-    remaining_key = (
-        "downloads_remaining"
-        if operation == "download"
-        else "conversions_remaining"
-    )
-    unlimited = bool(
-        (details or {}).get(unlimited_key)
-        if details is not None
-        else getattr(catalog_plan, unlimited_key)
-    )
-    if unlimited:
-        return PlanAccess(
-            allowed=True,
-            operation=operation,
-            plan_key=previous_plan,
-            max_file_size_mb=max_file_size_mb,
-        )
-
-    plan_type = str(
-        (details or {}).get("plan_type")
-        or (catalog_plan.plan_type if catalog_plan else "")
-    )
-    if plan_type == "package":
-        if details is not None:
-            balances = [
-                int(details.get(key) or 0)
-                for key in ("downloads_remaining", "conversions_remaining")
-            ]
-        else:
-            balances = [
-                int(getattr(catalog_plan, key) or 0)
-                for key in ("downloads_remaining", "conversions_remaining")
-            ]
-        remaining = min(balances)
-    else:
-        value = (
-            (details or {}).get(remaining_key)
-            if details is not None
-            else getattr(catalog_plan, remaining_key)
-        )
-        remaining = int(value or 0)
-
-    return PlanAccess(
-        allowed=remaining > 0,
-        operation=operation,
-        plan_key=previous_plan,
-        max_file_size_mb=max_file_size_mb,
-        message_key=(
-            None
-            if remaining > 0
-            else (
-                "plan_usage_exhausted"
-                if plan_type == "package"
-                else f"plan_{operation}_not_included"
-            )
-        ),
-    )
-
-
-async def record_plan_usage(user_id: int, operation: str) -> None:
-    """Record one successful operation for free users or usage packages."""
-    from services import db
-
-    _validate_operation(operation)
-    if settings.admin_id and user_id == settings.admin_id:
-        return
-
-    user = await db.get_user_plan(user_id)
-    plan_key = str((user or {}).get("plan") or "free")
-    if plan_key == "free":
-        starts_at, expires_at = _free_day_bounds()
-        await db.get_or_create_free_daily_usage(
-            user_id=user_id,
-            starts_at=starts_at,
-            expires_at=expires_at,
-            download_limit=FREE_DAILY_LIMITS["download"],
-            conversion_limit=FREE_DAILY_LIMITS["conversion"],
-            max_file_size_mb=FREE_MAX_FILE_SIZE_MB,
-        )
-        consumed = await db.consume_free_daily_usage(
+    if plan_type == "free":
+        row = await db.prepare_free_usage_window(
             user_id,
-            operation,
-            starts_at,
+            now=now,
+            next_reset_at=now + timedelta(days=1),
         )
-        if consumed is None:
-            logger.warning(
-                "Successful %s for user %s could not consume free usage.",
-                operation,
-                user_id,
-            )
-        return
+        free_started_at = row.get("free_started_at")
+        if (
+            isinstance(free_started_at, datetime)
+            and now >= _as_utc(free_started_at) + timedelta(days=plan.duration_days)
+        ):
+            return False, "free_expired"
+        if _file_exceeds_plan(plan, file_size_bytes):
+            return False, "file_too_large_for_plan"
 
-    details = await db.get_user_plan_details(user_id)
-    catalog_plan = get_plan(plan_key)
-    plan_type = str(
-        (details or {}).get("plan_type")
-        or (catalog_plan.plan_type if catalog_plan else "")
-    )
+        count_key = (
+            "downloads_today" if action == "download" else "conversions_today"
+        )
+        limit = (
+            plan.daily_download_limit
+            if action == "download"
+            else plan.daily_conversion_limit
+        )
+        if limit is not None and int(row.get(count_key) or 0) >= limit:
+            return False, "free_daily_limit_reached"
+        return True, None
+
+    if plan_type == "subscription":
+        if not await user_has_active_plan(user_id):
+            return False, "plan_expired"
+        if not _plan_allows(plan, action):
+            return False, "plan_feature_not_included"
+        if _file_exceeds_plan(plan, file_size_bytes):
+            return False, "file_too_large_for_plan"
+        return True, None
+
     if plan_type == "package":
-        consumed = await db.consume_package_usage(user_id)
-        if consumed is None:
+        package_expires_at = (row or {}).get("package_expires_at")
+        if (
+            not isinstance(package_expires_at, datetime)
+            or _as_utc(package_expires_at) <= now
+        ):
+            await db.set_user_plan(user_id, "free", None)
+            return False, "package_expired"
+        if int((row or {}).get("package_uses_remaining") or 0) <= 0:
+            return False, "package_depleted"
+        if _file_exceeds_plan(plan, file_size_bytes):
+            return False, "file_too_large_for_plan"
+        return True, None
+
+    return False, "plan_upgrade_required"
+
+
+async def increment_usage(user_id: int, action: Action) -> dict | None:
+    """Record one successfully delivered download or conversion."""
+    from services import db
+
+    if action not in ("download", "conversion"):
+        raise ValueError(f"Unsupported usage action: {action}")
+    if settings.admin_id and user_id == settings.admin_id:
+        return None
+
+    row = await db.get_user_plan(user_id)
+    plan_key = str((row or {}).get("plan") or "free")
+    plan = get_plan(plan_key) or PLANS["free"]
+    plan_type = str((row or {}).get("plan_type") or plan.plan_type)
+
+    if plan_type == "free":
+        now = datetime.now(timezone.utc)
+        await db.prepare_free_usage_window(
+            user_id,
+            now=now,
+            next_reset_at=now + timedelta(days=1),
+        )
+        return await db.increment_free_usage(user_id, action)
+
+    if plan_type == "package":
+        updated = await db.decrement_package_usage(user_id)
+        if updated is None:
             logger.warning(
                 "Successful %s for user %s could not consume package usage.",
-                operation,
+                action,
                 user_id,
             )
+        return updated
+
+    return row

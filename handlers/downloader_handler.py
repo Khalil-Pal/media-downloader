@@ -17,7 +17,7 @@ from aiogram.types import FSInputFile, Message
 from handlers.common import quality_keyboard
 from services import cleanup_session, download_media, fetch_info, stats
 from services.downloader import get_video_dimensions
-from services.payments import PlanAccess, check_plan_access, record_plan_usage
+from services.payments import check_usage_allowed, increment_usage
 from services.telethon_uploader import upload_large_file
 from services.user_store import get_user_lang_or_default, get_user_mode_or_default
 from utils import (
@@ -42,19 +42,18 @@ SMALL_FILE_LIMIT = 50 * 1024 * 1024
 async def _download_plan_access(
     message: Message,
     lang: str,
-) -> PlanAccess | None:
+    file_size_bytes: int | None = None,
+) -> bool:
     user_id = message.from_user.id  # type: ignore[union-attr]
-    access = await check_plan_access(user_id, "download")
-    if access.allowed:
-        return access
-    await message.answer(
-        t(
-            lang,
-            access.message_key or "plan_upgrade_required",
-            limit=access.daily_limit or 0,
-        )
+    allowed, reason_key = await check_usage_allowed(
+        user_id,
+        "download",
+        file_size_bytes,
     )
-    return None
+    if allowed:
+        return True
+    await message.answer(t(lang, reason_key or "plan_upgrade_required"))
+    return False
 
 
 async def _run_download(
@@ -67,8 +66,7 @@ async def _run_download(
     user_id = message.from_user.id  # type: ignore[union-attr]
     lang = await get_user_lang_or_default(user_id)
 
-    plan_access = await _download_plan_access(message, lang)
-    if plan_access is None:
+    if not await _download_plan_access(message, lang):
         return
 
     allowed, reason = await rate_limiter.check(user_id)
@@ -90,6 +88,17 @@ async def _run_download(
         except ValueError as exc:
             await status_msg.edit_text(t(lang, "info_error", error=str(exc)))
             await stats.record_failure(user_id)
+            return
+
+        allowed, reason_key = await check_usage_allowed(
+            user_id,
+            "download",
+            info.file_size_bytes,
+        )
+        if not allowed:
+            await status_msg.edit_text(
+                t(lang, reason_key or "plan_upgrade_required")
+            )
             return
 
         platform = detect_platform(url)
@@ -133,13 +142,14 @@ async def _run_download(
         )
 
         actual_size = result.file_path.stat().st_size
-        if actual_size > plan_access.max_file_size_mb * 1024 * 1024:
+        allowed, reason_key = await check_usage_allowed(
+            user_id,
+            "download",
+            actual_size,
+        )
+        if not allowed:
             await status_msg.edit_text(
-                t(
-                    lang,
-                    "plan_file_too_large",
-                    limit=plan_access.max_file_size_mb,
-                )
+                t(lang, reason_key or "plan_upgrade_required")
             )
             return
 
@@ -200,7 +210,7 @@ async def _run_download(
                     )
 
             try:
-                await record_plan_usage(user_id, "download")
+                await increment_usage(user_id, "download")
             except Exception:
                 logger.exception("Could not record plan usage for user %s.", user_id)
             await stats.record_success(user_id)
@@ -241,7 +251,7 @@ async def cmd_download(message: Message, bot: Bot) -> None:
         await message.answer(t(lang, "invalid_url"))
         return
 
-    if await _download_plan_access(message, lang) is None:
+    if not await _download_plan_access(message, lang):
         return
 
     await message.answer(
@@ -286,7 +296,7 @@ async def handle_url_message(message: Message, bot: Bot) -> None:
         await message.answer(t(lang, "mode_need_downloader"))
         return
 
-    if await _download_plan_access(message, lang) is None:
+    if not await _download_plan_access(message, lang):
         return
 
     await message.answer(

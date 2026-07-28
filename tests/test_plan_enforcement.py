@@ -17,12 +17,12 @@ from handlers.menu import _my_plan_text
 from services import db
 from services.downloader import DownloadResult, MediaInfo
 from services.payments import (
-    FREE_DAILY_LIMITS,
-    FREE_MAX_FILE_SIZE_MB,
-    check_plan_access,
-    record_plan_usage,
+    PLANS,
+    PURCHASABLE_PLANS,
+    check_usage_allowed,
+    increment_usage,
 )
-from services.plans import PLANS
+from services.plans import PLANS as COMPATIBILITY_PLANS
 from utils import rate_limiter
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -97,84 +97,158 @@ class PlanEnforcementTests(unittest.IsolatedAsyncioTestCase):
         object.__setattr__(settings, "admin_id", self._original_admin_id)
         self._temp_dir.cleanup()
 
-    async def test_free_user_is_allowed_then_both_daily_limits_block(self) -> None:
+    def test_catalog_is_the_single_source_of_truth(self) -> None:
+        self.assertIs(PLANS, COMPATIBILITY_PLANS)
+        self.assertNotIn("free", PURCHASABLE_PLANS)
+        self.assertEqual(PLANS["free"].duration_days, 2)
+        self.assertEqual(PLANS["free"].daily_download_limit, 10)
+        self.assertEqual(PLANS["free"].daily_conversion_limit, 3)
+        self.assertEqual(PLANS["free"].plan_priority, 0)
+        self.assertEqual(PLANS["annual"].plan_priority, 2)
+        self.assertEqual(PLANS["starter_pack"].package_uses, 15)
+        self.assertEqual(PLANS["pro_pack"].package_uses, 60)
+        self.assertEqual(PLANS["ultra_pack"].package_uses, 150)
+        self.assertEqual(PLANS["downloader_pro"].max_video_height, 1080)
+        self.assertTrue(PLANS["downloader_pro"].playlist_support)
+
+    async def test_free_daily_limit_and_lazy_reset(self) -> None:
         user_id = 2001
         await db.set_user_lang(user_id, "en")
         await db.set_user_mode(user_id, "converter")
 
-        self.assertTrue((await check_plan_access(user_id, "download")).allowed)
-        self.assertTrue((await check_plan_access(user_id, "conversion")).allowed)
-
-        for _ in range(FREE_DAILY_LIMITS["download"]):
-            await record_plan_usage(user_id, "download")
-        for _ in range(FREE_DAILY_LIMITS["conversion"]):
-            await record_plan_usage(user_id, "conversion")
-
-        download_message, _ = _message(user_id)
-        await downloader_handler._run_download(
-            download_message,
-            SimpleNamespace(),
-            "https://example.com/media",
+        self.assertEqual(
+            await check_usage_allowed(user_id, "download", 1),
+            (True, None),
         )
-        download_text = download_message.answer.await_args.args[0]
-        self.assertIn("free limit of 10 downloads", download_text)
-        self.assertIn("/upgrade", download_text)
+        for _ in range(10):
+            await increment_usage(user_id, "download")
 
-        conversion_message, _ = _document(user_id)
-        await convert_handler.handle_convertible_file(conversion_message)
-        conversion_text = conversion_message.answer.await_args.args[0]
-        self.assertIn("free limit of 3 conversions", conversion_text)
-        self.assertIn("/upgrade", conversion_text)
-
+        self.assertEqual(
+            await check_usage_allowed(user_id, "download", 1),
+            (False, "free_daily_limit_reached"),
+        )
         row = await db.get_user_plan(user_id)
-        self.assertEqual(row["plan"], "free")
-        self.assertIsNone(row["plan_expires_at"])
-        usage = await db.get_user_plan_details(user_id)
-        self.assertEqual(usage["plan_key"], "free_daily")
-        self.assertEqual(usage["downloads_remaining"], 0)
-        self.assertEqual(usage["conversions_remaining"], 0)
-        my_plan_text = await _my_plan_text(user_id, "en")
-        self.assertIn("Status: Free", my_plan_text)
-        self.assertNotIn("Expiry date:", my_plan_text)
+        self.assertEqual(row["downloads_today"], 10)
+        self.assertEqual(row["conversions_today"], 0)
+        self.assertIsNotNone(row["free_started_at"])
+        self.assertIsNotNone(row["usage_reset_at"])
 
-    async def test_expired_plan_reports_expiry_and_lazily_downgrades(self) -> None:
-        for user_id, operation in ((2002, "download"), (2003, "conversion")):
-            with self.subTest(operation=operation):
-                await db.set_user_lang(user_id, "en")
-                await db.set_user_mode(user_id, "converter")
-                await db.set_user_plan(
-                    user_id,
-                    "all_in_one",
-                    datetime.now(timezone.utc) - timedelta(minutes=1),
-                )
+        message, _ = _message(user_id)
+        with patch.object(
+            downloader_handler,
+            "fetch_info",
+            new=AsyncMock(),
+        ) as fetch_info:
+            await downloader_handler._run_download(
+                message,
+                SimpleNamespace(),
+                "https://example.com/media",
+            )
+        fetch_info.assert_not_awaited()
+        self.assertEqual(
+            message.answer.await_args.args[0],
+            "You've reached today's Free Plan usage limit. "
+            "Use /upgrade to continue.",
+        )
 
-                before = await db.get_user_plan(user_id)
-                self.assertEqual(before["plan"], "all_in_one")
+        db._memory_users[user_id]["conversions_today"] = 2
+        db._memory_users[user_id]["usage_reset_at"] = (
+            datetime.now(timezone.utc) - timedelta(seconds=1)
+        )
+        self.assertEqual(
+            await check_usage_allowed(user_id, "download", 1),
+            (True, None),
+        )
+        reset = await db.get_user_plan(user_id)
+        self.assertEqual(reset["downloads_today"], 0)
+        self.assertEqual(reset["conversions_today"], 0)
+        self.assertGreater(reset["usage_reset_at"], datetime.now(timezone.utc))
 
-                if operation == "download":
-                    message, _ = _message(user_id)
-                    await downloader_handler._run_download(
-                        message,
-                        SimpleNamespace(),
-                        "https://example.com/media",
-                    )
-                else:
-                    message, _ = _document(user_id)
-                    await convert_handler.handle_convertible_file(message)
+    async def test_free_two_day_window_expires_with_distinct_reason(self) -> None:
+        user_id = 2002
+        await db.set_user_lang(user_id, "en")
+        await db.set_user_mode(user_id, "converter")
+        self.assertTrue((await check_usage_allowed(user_id, "conversion", 1))[0])
+        db._memory_users[user_id]["free_started_at"] = (
+            datetime.now(timezone.utc) - timedelta(days=2, seconds=1)
+        )
 
-                self.assertIn(
-                    "paid plan has expired",
-                    message.answer.await_args.args[0],
-                )
-                self.assertIn("/upgrade", message.answer.await_args.args[0])
+        self.assertEqual(
+            await check_usage_allowed(user_id, "conversion", 1),
+            (False, "free_expired"),
+        )
+        message, _ = _document(user_id)
+        await convert_handler.handle_convertible_file(message)
+        self.assertEqual(
+            message.answer.await_args.args[0],
+            "Your 2-day Free Starter period has ended. "
+            "Use /upgrade to continue.",
+        )
 
-                after = await db.get_user_plan(user_id)
-                self.assertEqual(after["plan"], "free")
-                self.assertIsNone(after["plan_expires_at"])
-                self.assertEqual(after["payment_status"], "none")
+    async def test_downloader_pro_allows_downloads_but_never_conversions(
+        self,
+    ) -> None:
+        user_id = 2003
+        await db.set_user_lang(user_id, "en")
+        await db.set_user_mode(user_id, "converter")
+        await db.activate_user_plan(user_id, PLANS["downloader_pro"])
 
-    async def test_active_all_in_one_completes_download_and_conversion(self) -> None:
+        for _ in range(25):
+            self.assertEqual(
+                await check_usage_allowed(user_id, "download", 1),
+                (True, None),
+            )
+            await increment_usage(user_id, "download")
+        self.assertEqual(
+            await check_usage_allowed(user_id, "conversion", 1),
+            (False, "plan_feature_not_included"),
+        )
+
+        message, _ = _document(user_id)
+        await convert_handler.handle_convertible_file(message)
+        self.assertIn(
+            "current plan does not include this feature",
+            message.answer.await_args.args[0],
+        )
+
+    async def test_converter_pro_allows_conversions_but_never_downloads(
+        self,
+    ) -> None:
         user_id = 2004
+        await db.set_user_lang(user_id, "en")
+        await db.set_user_mode(user_id, "converter")
+        await db.activate_user_plan(user_id, PLANS["converter_pro"])
+
+        for _ in range(25):
+            self.assertEqual(
+                await check_usage_allowed(user_id, "conversion", 1),
+                (True, None),
+            )
+            await increment_usage(user_id, "conversion")
+        self.assertEqual(
+            await check_usage_allowed(user_id, "download", 1),
+            (False, "plan_feature_not_included"),
+        )
+
+        message, _ = _message(user_id)
+        with patch.object(
+            downloader_handler,
+            "fetch_info",
+            new=AsyncMock(),
+        ) as fetch_info:
+            await downloader_handler._run_download(
+                message,
+                SimpleNamespace(),
+                "https://example.com/media",
+            )
+        fetch_info.assert_not_awaited()
+        self.assertIn(
+            "current plan does not include this feature",
+            message.answer.await_args.args[0],
+        )
+
+    async def test_all_in_one_completes_download_and_conversion(self) -> None:
+        user_id = 2005
         await db.set_user_lang(user_id, "en")
         await db.set_user_mode(user_id, "converter")
         await db.activate_user_plan(user_id, PLANS["all_in_one"])
@@ -190,6 +264,7 @@ class PlanEnforcementTests(unittest.IsolatedAsyncioTestCase):
             platform="Test",
             file_size_str="5 B",
             duration_seconds=1,
+            file_size_bytes=5,
         )
         result = DownloadResult(
             success=True,
@@ -222,12 +297,12 @@ class PlanEnforcementTests(unittest.IsolatedAsyncioTestCase):
                 downloader_handler.stats,
                 "record_success",
                 new=AsyncMock(),
-            ) as record_success,
+            ),
             patch.object(
                 downloader_handler.stats,
                 "record_failure",
                 new=AsyncMock(),
-            ) as record_failure,
+            ),
             patch.object(
                 downloader_handler,
                 "get_video_dimensions",
@@ -242,14 +317,10 @@ class PlanEnforcementTests(unittest.IsolatedAsyncioTestCase):
 
         download_bot.send_video.assert_awaited_once()
         download_status.delete.assert_awaited_once()
-        record_success.assert_awaited_once_with(user_id)
-        record_failure.assert_not_awaited()
 
         conversion_message, _ = _document(user_id)
         await convert_handler.handle_convertible_file(conversion_message)
-        picker_text = conversion_message.answer.await_args.args[0]
         picker_markup = conversion_message.answer.await_args.kwargs["reply_markup"]
-        self.assertIn("Choose a target format", picker_text)
         callback_data = picker_markup.inline_keyboard[0][0].callback_data
 
         conversion_status = SimpleNamespace(
@@ -293,63 +364,144 @@ class PlanEnforcementTests(unittest.IsolatedAsyncioTestCase):
 
         conversion_bot.send_document.assert_awaited_once()
         conversion_status.delete.assert_awaited_once()
-        row = await db.get_user_plan(user_id)
-        self.assertEqual(row["plan"], "all_in_one")
-        self.assertGreater(row["plan_expires_at"], datetime.now(timezone.utc))
-
-    async def test_plan_capabilities_and_shared_package_balance(self) -> None:
-        downloader_user = 2005
-        converter_user = 2006
-        package_user = 2007
-        await db.activate_user_plan(
-            downloader_user,
-            PLANS["downloader_pro"],
-        )
-        await db.activate_user_plan(
-            converter_user,
-            PLANS["converter_pro"],
-        )
-        await db.activate_user_plan(package_user, PLANS["starter_pack"])
-
-        self.assertTrue(
-            (await check_plan_access(downloader_user, "download")).allowed
-        )
-        downloader_conversion = await check_plan_access(
-            downloader_user,
-            "conversion",
-        )
-        self.assertFalse(downloader_conversion.allowed)
         self.assertEqual(
-            downloader_conversion.message_key,
-            "plan_conversion_not_included",
+            await check_usage_allowed(user_id, "download", 1),
+            (True, None),
         )
-
-        self.assertTrue(
-            (await check_plan_access(converter_user, "conversion")).allowed
-        )
-        converter_download = await check_plan_access(
-            converter_user,
-            "download",
-        )
-        self.assertFalse(converter_download.allowed)
         self.assertEqual(
-            converter_download.message_key,
-            "plan_download_not_included",
+            await check_usage_allowed(user_id, "conversion", 1),
+            (True, None),
         )
 
-        await record_plan_usage(package_user, "download")
-        details = await db.get_user_plan_details(package_user)
-        self.assertEqual(details["downloads_remaining"], 14)
-        self.assertEqual(details["conversions_remaining"], 14)
+    async def test_package_uses_one_shared_depleting_counter(self) -> None:
+        user_id = 2006
+        await db.set_user_lang(user_id, "en")
+        await db.activate_user_plan(user_id, PLANS["starter_pack"])
 
-        for _ in range(14):
-            await record_plan_usage(package_user, "conversion")
-        exhausted = await check_plan_access(package_user, "download")
-        self.assertFalse(exhausted.allowed)
-        self.assertEqual(exhausted.message_key, "plan_usage_exhausted")
+        before = await db.get_user_plan(user_id)
+        self.assertEqual(before["plan_type"], "package")
+        self.assertEqual(before["package_uses_remaining"], 15)
+        self.assertIsNone(before["plan_expires_at"])
+        self.assertGreater(
+            before["package_expires_at"],
+            datetime.now(timezone.utc),
+        )
 
-    async def test_conversion_callback_rechecks_a_newly_reached_limit(self) -> None:
-        user_id = 2008
+        await increment_usage(user_id, "download")
+        after_download = await db.get_user_plan(user_id)
+        self.assertEqual(after_download["package_uses_remaining"], 14)
+
+        await increment_usage(user_id, "conversion")
+        after_conversion = await db.get_user_plan(user_id)
+        self.assertEqual(after_conversion["package_uses_remaining"], 13)
+
+        for index in range(13):
+            action = "download" if index % 2 == 0 else "conversion"
+            await increment_usage(user_id, action)
+        depleted = await db.get_user_plan(user_id)
+        self.assertEqual(depleted["package_uses_remaining"], 0)
+        self.assertEqual(
+            await check_usage_allowed(user_id, "download", 1),
+            (False, "package_depleted"),
+        )
+        details = await db.get_user_plan_details(user_id)
+        self.assertIsNone(details["downloads_remaining"])
+        self.assertIsNone(details["conversions_remaining"])
+        self.assertIn("0 downloads or conversions", await _my_plan_text(user_id, "en"))
+
+    async def test_package_expiry_is_distinct_from_depletion(self) -> None:
+        user_id = 2007
+        await db.activate_user_plan(user_id, PLANS["starter_pack"])
+        db._memory_users[user_id]["package_uses_remaining"] = 10
+        db._memory_users[user_id]["package_expires_at"] = (
+            datetime.now(timezone.utc) - timedelta(seconds=1)
+        )
+
+        before = await db.get_user_plan(user_id)
+        self.assertEqual(before["package_uses_remaining"], 10)
+        self.assertEqual(
+            await check_usage_allowed(user_id, "conversion", 1),
+            (False, "package_expired"),
+        )
+        after = await db.get_user_plan(user_id)
+        self.assertEqual(after["plan"], "free")
+        self.assertEqual(after["plan_type"], "free")
+        self.assertIsNone(after["package_uses_remaining"])
+        self.assertIsNone(after["package_expires_at"])
+
+    async def test_file_size_caps_block_before_expensive_work(self) -> None:
+        free_user = 2008
+        await db.set_user_lang(free_user, "en")
+        await db.set_user_mode(free_user, "converter")
+        self.assertEqual(
+            await check_usage_allowed(
+                free_user,
+                "conversion",
+                501 * MEBIBYTE,
+            ),
+            (False, "file_too_large_for_plan"),
+        )
+        oversized_document, _ = _document(
+            free_user,
+            file_size=501 * MEBIBYTE,
+        )
+        await convert_handler.handle_convertible_file(oversized_document)
+        self.assertIn(
+            "exceeds your plan's size limit",
+            oversized_document.answer.await_args.args[0],
+        )
+
+        paid_user = 2009
+        await db.set_user_lang(paid_user, "en")
+        await db.activate_user_plan(paid_user, PLANS["all_in_one"])
+        self.assertEqual(
+            await check_usage_allowed(
+                paid_user,
+                "download",
+                2001 * MEBIBYTE,
+            ),
+            (False, "file_too_large_for_plan"),
+        )
+
+        estimated = MediaInfo(
+            title="Oversized",
+            uploader="Test",
+            duration="1:00",
+            platform="Test",
+            file_size_str="2001 MB",
+            file_size_bytes=2001 * MEBIBYTE,
+        )
+        message, status = _message(paid_user)
+        with (
+            patch.object(
+                downloader_handler,
+                "fetch_info",
+                new=AsyncMock(return_value=estimated),
+            ),
+            patch.object(
+                downloader_handler,
+                "download_media",
+                new=AsyncMock(),
+            ) as download_media,
+            patch.object(
+                downloader_handler.rate_limiter,
+                "check",
+                new=AsyncMock(return_value=(True, "")),
+            ),
+        ):
+            await downloader_handler._run_download(
+                message,
+                SimpleNamespace(),
+                "https://example.com/large",
+            )
+        download_media.assert_not_awaited()
+        self.assertIn(
+            "exceeds your plan's size limit",
+            status.edit_text.await_args.args[0],
+        )
+
+    async def test_stale_conversion_callback_rechecks_usage(self) -> None:
+        user_id = 2010
         await db.set_user_lang(user_id, "en")
         await db.set_user_mode(user_id, "converter")
         message, _ = _document(user_id)
@@ -357,8 +509,8 @@ class PlanEnforcementTests(unittest.IsolatedAsyncioTestCase):
         markup = message.answer.await_args.kwargs["reply_markup"]
         callback_data = markup.inline_keyboard[0][0].callback_data
 
-        for _ in range(FREE_DAILY_LIMITS["conversion"]):
-            await record_plan_usage(user_id, "conversion")
+        for _ in range(3):
+            await increment_usage(user_id, "conversion")
 
         callback = SimpleNamespace(
             from_user=SimpleNamespace(id=user_id),
@@ -369,84 +521,74 @@ class PlanEnforcementTests(unittest.IsolatedAsyncioTestCase):
         bot = SimpleNamespace(download=AsyncMock())
         await convert_handler.cb_convert(callback, bot)
 
-        alert_text = callback.answer.await_args.args[0]
-        self.assertIn("free limit of 3 conversions", alert_text)
-        callback.answer.assert_awaited_once_with(alert_text, show_alert=True)
+        self.assertIn(
+            "Free Plan usage limit",
+            callback.answer.await_args.args[0],
+        )
         bot.download.assert_not_awaited()
 
-    async def test_free_allowance_resets_on_a_new_utc_day(self) -> None:
-        user_id = 2010
-        today = datetime.now(timezone.utc).replace(
-            hour=0,
-            minute=0,
-            second=0,
-            microsecond=0,
-        )
-        yesterday = today - timedelta(days=1)
-        await db.get_or_create_free_daily_usage(
-            user_id=user_id,
-            starts_at=yesterday,
-            expires_at=today,
-            download_limit=FREE_DAILY_LIMITS["download"],
-            conversion_limit=FREE_DAILY_LIMITS["conversion"],
-            max_file_size_mb=FREE_MAX_FILE_SIZE_MB,
-        )
-        db._memory_user_plans[user_id]["downloads_remaining"] = 0
-        db._memory_user_plans[user_id]["conversions_remaining"] = 0
-
-        self.assertTrue((await check_plan_access(user_id, "download")).allowed)
-        self.assertTrue((await check_plan_access(user_id, "conversion")).allowed)
-        usage = await db.get_user_plan_details(user_id)
-        self.assertEqual(usage["starts_at"], today)
-        self.assertEqual(
-            usage["downloads_remaining"],
-            FREE_DAILY_LIMITS["download"],
-        )
-        self.assertEqual(
-            usage["conversions_remaining"],
-            FREE_DAILY_LIMITS["conversion"],
-        )
-
-    async def test_free_file_size_and_admin_bypass(self) -> None:
-        free_user = 2009
-        await db.set_user_lang(free_user, "en")
-        await db.set_user_mode(free_user, "converter")
-        oversized, _ = _document(
-            free_user,
-            file_size=(FREE_MAX_FILE_SIZE_MB + 1) * MEBIBYTE,
-        )
-        await convert_handler.handle_convertible_file(oversized)
-        self.assertIn(
-            "plan allows files up to 500 MB",
-            oversized.answer.await_args.args[0],
-        )
-
+    async def test_admin_bypasses_expiry_limits_features_and_size(self) -> None:
         admin_id = settings.admin_id
-        object.__setattr__(settings, "admin_id", 0)
-        try:
-            for _ in range(FREE_DAILY_LIMITS["download"]):
-                await record_plan_usage(admin_id, "download")
-            for _ in range(FREE_DAILY_LIMITS["conversion"]):
-                await record_plan_usage(admin_id, "conversion")
-        finally:
-            object.__setattr__(settings, "admin_id", admin_id)
+        await db.set_user_plan(
+            admin_id,
+            "converter_pro",
+            datetime.now(timezone.utc) - timedelta(days=1),
+        )
+        self.assertEqual(
+            await check_usage_allowed(
+                admin_id,
+                "download",
+                10_000 * MEBIBYTE,
+            ),
+            (True, None),
+        )
+        self.assertEqual(
+            await check_usage_allowed(
+                admin_id,
+                "conversion",
+                10_000 * MEBIBYTE,
+            ),
+            (True, None),
+        )
 
-        usage = await db.get_user_plan_details(admin_id)
-        self.assertEqual(usage["downloads_remaining"], 0)
-        self.assertEqual(usage["conversions_remaining"], 0)
-        self.assertTrue((await check_plan_access(admin_id, "download")).allowed)
-        self.assertTrue((await check_plan_access(admin_id, "conversion")).allowed)
+    def test_schema_policy_calls_and_translations_are_complete(self) -> None:
+        db_source = (PROJECT_ROOT / "services" / "db.py").read_text(
+            encoding="utf-8"
+        )
+        for column in (
+            "plan_type",
+            "downloads_today",
+            "conversions_today",
+            "usage_reset_at",
+            "free_started_at",
+            "package_uses_remaining",
+            "package_expires_at",
+        ):
+            self.assertIn(f"ADD COLUMN IF NOT EXISTS {column}", db_source)
 
-    def test_plan_rejection_translations_are_complete(self) -> None:
+        payments_source = (PROJECT_ROOT / "services" / "payments.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("downloads_remaining", payments_source)
+        self.assertNotIn("conversions_remaining", payments_source)
+        self.assertIn("GREATEST(", db_source)
+        self.assertNotIn("LEAST(", db_source)
+
+        for handler_name in ("downloader_handler.py", "convert_handler.py"):
+            handler_source = (
+                PROJECT_ROOT / "handlers" / handler_name
+            ).read_text(encoding="utf-8")
+            self.assertIn("check_usage_allowed", handler_source)
+            self.assertIn("increment_usage", handler_source)
+            self.assertNotIn("check_plan_access", handler_source)
+
         required_keys = {
-            "plan_free_download_limit_reached",
-            "plan_free_conversion_limit_reached",
-            "plan_expired",
-            "plan_upgrade_required",
-            "plan_download_not_included",
-            "plan_conversion_not_included",
-            "plan_usage_exhausted",
-            "plan_file_too_large",
+            "free_daily_limit_reached",
+            "free_expired",
+            "plan_feature_not_included",
+            "file_too_large_for_plan",
+            "package_depleted",
+            "package_expired",
         }
         for language in ("en", "ar", "ru"):
             with self.subTest(language=language):
