@@ -17,8 +17,9 @@ from aiogram.types import FSInputFile, Message
 from handlers.common import quality_keyboard
 from services import cleanup_session, download_media, fetch_info, stats
 from services.downloader import get_video_dimensions
+from services.payments import check_usage_allowed, increment_usage
 from services.telethon_uploader import upload_large_file
-from services.user_store import get_user_lang_or_default, get_user_mode_or_default, register_user
+from services.user_store import get_user_lang_or_default, get_user_mode_or_default
 from utils import (
     detect_platform,
     extract_url_from_text,
@@ -38,9 +39,37 @@ _active_downloads: set[int] = set()
 SMALL_FILE_LIMIT = 50 * 1024 * 1024
 
 
-async def _run_download(message: Message, bot: Bot, url: str, quality: str = "best", audio_only: bool = False) -> None:
-    user_id = message.from_user.id  # type: ignore[union-attr]
+async def _download_plan_access(
+    message: Message,
+    lang: str,
+    user_id: int,
+    file_size_bytes: int | None = None,
+) -> bool:
+    allowed, reason_key = await check_usage_allowed(
+        user_id,
+        "download",
+        file_size_bytes,
+    )
+    if allowed:
+        return True
+    await message.answer(t(lang, reason_key or "plan_upgrade_required"))
+    return False
+
+
+async def _run_download(
+    message: Message,
+    bot: Bot,
+    url: str,
+    quality: str = "best",
+    audio_only: bool = False,
+    user_id: int | None = None,
+) -> None:
+    if user_id is None:
+        user_id = message.from_user.id  # type: ignore[union-attr]
     lang = await get_user_lang_or_default(user_id)
+
+    if not await _download_plan_access(message, lang, user_id):
+        return
 
     allowed, reason = await rate_limiter.check(user_id)
     if not allowed:
@@ -61,6 +90,17 @@ async def _run_download(message: Message, bot: Bot, url: str, quality: str = "be
         except ValueError as exc:
             await status_msg.edit_text(t(lang, "info_error", error=str(exc)))
             await stats.record_failure(user_id)
+            return
+
+        allowed, reason_key = await check_usage_allowed(
+            user_id,
+            "download",
+            info.file_size_bytes,
+        )
+        if not allowed:
+            await status_msg.edit_text(
+                t(lang, reason_key or "plan_upgrade_required")
+            )
             return
 
         platform = detect_platform(url)
@@ -104,6 +144,16 @@ async def _run_download(message: Message, bot: Bot, url: str, quality: str = "be
         )
 
         actual_size = result.file_path.stat().st_size
+        allowed, reason_key = await check_usage_allowed(
+            user_id,
+            "download",
+            actual_size,
+        )
+        if not allowed:
+            await status_msg.edit_text(
+                t(lang, reason_key or "plan_upgrade_required")
+            )
+            return
 
         try:
             if actual_size > SMALL_FILE_LIMIT:
@@ -161,8 +211,15 @@ async def _run_download(message: Message, bot: Bot, url: str, quality: str = "be
                         **video_kwargs,
                     )
 
-            await status_msg.delete()
+            try:
+                await increment_usage(user_id, "download")
+            except Exception:
+                logger.exception("Could not record plan usage for user %s.", user_id)
             await stats.record_success(user_id)
+            try:
+                await status_msg.delete()
+            except Exception as exc:
+                logger.debug("Could not delete completed download status: %s", exc)
 
         except Exception as exc:
             logger.exception("Upload error for %s", result.file_path.name)
@@ -183,7 +240,6 @@ async def _run_download(message: Message, bot: Bot, url: str, quality: str = "be
 @router.message(Command("download"))
 async def cmd_download(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
-    await register_user(user_id)
     lang = await get_user_lang_or_default(user_id)
     text = message.text or ""
     parts = text.split(maxsplit=1)
@@ -197,6 +253,9 @@ async def cmd_download(message: Message, bot: Bot) -> None:
         await message.answer(t(lang, "invalid_url"))
         return
 
+    if not await _download_plan_access(message, lang, user_id):
+        return
+
     await message.answer(
         t(lang, "choose_quality", url=truncate(url, 60)),
         parse_mode="Markdown",
@@ -207,7 +266,6 @@ async def cmd_download(message: Message, bot: Bot) -> None:
 @router.message(Command("audio"))
 async def cmd_audio(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
-    await register_user(user_id)
     lang = await get_user_lang_or_default(user_id)
     text = message.text or ""
     parts = text.split(maxsplit=1)
@@ -226,7 +284,6 @@ async def cmd_audio(message: Message, bot: Bot) -> None:
 
 @router.message(F.text & F.text.regexp(r"https?://\S+"))
 async def handle_url_message(message: Message, bot: Bot) -> None:
-    await register_user(message.from_user.id)  # type: ignore[union-attr]
     lang = await get_user_lang_or_default(message.from_user.id)  # type: ignore[union-attr]
     if not await ensure_mode_selected(message, lang):
         return
@@ -239,6 +296,9 @@ async def handle_url_message(message: Message, bot: Bot) -> None:
     mode = await get_user_mode_or_default(message.from_user.id)  # type: ignore[union-attr]
     if mode == "converter":
         await message.answer(t(lang, "mode_need_downloader"))
+        return
+
+    if not await _download_plan_access(message, lang, message.from_user.id):  # type: ignore[union-attr]
         return
 
     await message.answer(
