@@ -42,9 +42,9 @@ SMALL_FILE_LIMIT = 50 * 1024 * 1024
 async def _download_plan_access(
     message: Message,
     lang: str,
-    user_id: int,
     file_size_bytes: int | None = None,
 ) -> bool:
+    user_id = message.from_user.id  # type: ignore[union-attr]
     allowed, reason_key = await check_usage_allowed(
         user_id,
         "download",
@@ -62,13 +62,11 @@ async def _run_download(
     url: str,
     quality: str = "best",
     audio_only: bool = False,
-    user_id: int | None = None,
 ) -> None:
-    if user_id is None:
-        user_id = message.from_user.id  # type: ignore[union-attr]
+    user_id = message.from_user.id  # type: ignore[union-attr]
     lang = await get_user_lang_or_default(user_id)
 
-    if not await _download_plan_access(message, lang, user_id):
+    if not await _download_plan_access(message, lang):
         return
 
     allowed, reason = await rate_limiter.check(user_id)
@@ -253,7 +251,7 @@ async def cmd_download(message: Message, bot: Bot) -> None:
         await message.answer(t(lang, "invalid_url"))
         return
 
-    if not await _download_plan_access(message, lang, user_id):
+    if not await _download_plan_access(message, lang):
         return
 
     await message.answer(
@@ -298,7 +296,7 @@ async def handle_url_message(message: Message, bot: Bot) -> None:
         await message.answer(t(lang, "mode_need_downloader"))
         return
 
-    if not await _download_plan_access(message, lang, message.from_user.id):  # type: ignore[union-attr]
+    if not await _download_plan_access(message, lang):
         return
 
     await message.answer(
