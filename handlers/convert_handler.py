@@ -22,8 +22,9 @@ from services.converter import (
     supported_targets,
     tier2_caveat_key,
 )
+from services.payments import check_usage_allowed, increment_usage
 from services.telethon_uploader import upload_large_file
-from services.user_store import get_user_lang_or_default, get_user_mode_or_default, register_user
+from services.user_store import get_user_lang_or_default, get_user_mode_or_default
 from utils import rate_limiter
 from utils.i18n import t
 from handlers.language import ensure_mode_selected
@@ -102,7 +103,6 @@ def _conversion_keyboard(token: str, options, lang: str):
 @router.message(F.document | F.video | F.audio)
 async def handle_convertible_file(message: Message) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
-    await register_user(user_id)
     lang = await get_user_lang_or_default(user_id)
     if not await ensure_mode_selected(message, lang):
         return
@@ -119,14 +119,23 @@ async def handle_convertible_file(message: Message) -> None:
         await message.answer(t(lang, "mode_need_converter"))
         return
 
+    if not options:
+        await message.answer(t(lang, "conversion_unsupported"))
+        return
+
+    allowed, reason_key = await check_usage_allowed(
+        user_id,
+        "conversion",
+        file_size,
+    )
+    if not allowed:
+        await message.answer(t(lang, reason_key or "plan_upgrade_required"))
+        return
+
     if file_size and file_size > settings.max_convert_file_size_bytes:
         await message.answer(
             t(lang, "conversion_too_large", limit=settings.max_convert_file_size_mb)
         )
-        return
-
-    if not options:
-        await message.answer(t(lang, "conversion_unsupported"))
         return
 
     targets = tuple(option.target_format for option in options)
@@ -172,6 +181,18 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
 
     if target_format not in request.targets:
         await callback.answer(t(lang, "invalid_selection"), show_alert=True)
+        return
+
+    usage_allowed, reason_key = await check_usage_allowed(
+        user_id,
+        "conversion",
+        request.file_size,
+    )
+    if not usage_allowed:
+        await callback.answer(
+            t(lang, reason_key or "plan_upgrade_required"),
+            show_alert=True,
+        )
         return
 
     allowed, reason = await rate_limiter.check(user_id)
@@ -230,8 +251,16 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
                 caption=caption,
             )
 
+        try:
+            await increment_usage(user_id, "conversion")
+        except Exception:
+            logger.exception("Could not record plan usage for user %s.", user_id)
+
         if status_msg:
-            await status_msg.delete()
+            try:
+                await status_msg.delete()
+            except Exception as exc:
+                logger.debug("Could not delete completed conversion status: %s", exc)
 
     except Exception as exc:
         logger.exception("Conversion failed for %s to %s", request.file_name, target_format)

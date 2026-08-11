@@ -39,6 +39,12 @@ Sandy Squirrel can also convert files between supported formats.
 * 🎵 Audio / Video → MP3
 * 📄 DOCX, XLSX, MD, PPTX → PDF
 * 🖼 PNG ↔ JPG ↔ WebP
+* 📄 PDF → DOCX, PPTX, Markdown
+* 📊 Table-based PDF → XLSX
+* 📽 DOCX → PPTX
+
+Tier 2 document conversions may not preserve complex formatting exactly.
+Scanned or image-only PDFs require OCR and are not supported.
 
 ### How to use converting mode
 

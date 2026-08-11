@@ -34,6 +34,27 @@ class Settings:
     api_id: int = field(default_factory=lambda: _int("API_ID", 0))
     api_hash: str = field(default_factory=lambda: os.getenv("API_HASH", ""))
     phone: str = field(default_factory=lambda: os.getenv("PHONE", ""))
+    payment_usd_details: str = field(
+        default_factory=lambda: os.getenv("PAYMENT_USD_DETAILS", "").strip()
+    )
+    payment_ils_details: str = field(
+        default_factory=lambda: os.getenv("PAYMENT_ILS_DETAILS", "").strip()
+    )
+    payment_rub_details: str = field(
+        default_factory=lambda: os.getenv("PAYMENT_RUB_DETAILS", "").strip()
+    )
+    payment_info_rub: str = field(
+        default_factory=lambda: os.getenv("PAYMENT_INFO_RUB", "").strip()
+    )
+    payment_info_usd: str = field(
+        default_factory=lambda: os.getenv("PAYMENT_INFO_USD", "").strip()
+    )
+    payment_info_ils: str = field(
+        default_factory=lambda: os.getenv("PAYMENT_INFO_ILS", "").strip()
+    )
+    payment_review_eta: str = field(
+        default_factory=lambda: os.getenv("PAYMENT_REVIEW_ETA", "within 24 hours").strip()
+    )
     # Set only when using Telegram's self-hosted Local Bot API server.
     # That server is required for bot-originated uploads above 50 MB.
     local_bot_api_url: str = field(
@@ -46,7 +67,7 @@ class Settings:
     # Override with MAX_FILE_SIZE_MB in your .env if you need a lower cap.
     max_file_size_mb: int = field(default_factory=lambda: _int("MAX_FILE_SIZE_MB", 2000))
     max_convert_file_size_mb: int = field(
-        default_factory=lambda: _int("MAX_CONVERT_FILE_SIZE_MB", 200)
+        default_factory=lambda: _int("MAX_CONVERT_FILE_SIZE_MB", 2000)
     )
     download_path: Path = field(
         default_factory=lambda: Path(os.getenv("DOWNLOAD_PATH", "./temp_downloads"))
@@ -83,6 +104,20 @@ class Settings:
 
     def ensure_download_dir(self) -> None:
         self.download_path.mkdir(parents=True, exist_ok=True)
+
+    def payment_details_for(self, currency: str) -> str:
+        return {
+            "USD": self.payment_usd_details,
+            "ILS": self.payment_ils_details,
+            "RUB": self.payment_rub_details,
+        }.get(currency, "")
+
+    def upgrade_payment_info_for(self, currency: str) -> str:
+        return {
+            "RUB": self.payment_info_rub,
+            "USD": self.payment_info_usd,
+            "ILS": self.payment_info_ils,
+        }.get(currency, "")
 
 
 # Singleton – import this everywhere

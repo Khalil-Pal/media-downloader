@@ -1,0 +1,1 @@
+"""Sandy Squirrel automated tests."""

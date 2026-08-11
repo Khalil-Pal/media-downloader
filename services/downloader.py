@@ -127,15 +127,15 @@ _cancel_flags: dict[int, asyncio.Event] = {}
 QUALITY_FORMATS: dict[str, str] = {
     # Select the best available media.  Video is converted to a Telegram-safe
     # H.264/AAC MP4 after download, so do not restrict source codecs here.
-    "best": "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b",
-    "720": "bv*[height<=720][vcodec^=avc1]+ba[acodec^=mp4a]/bv*[height<=720][ext=mp4]+ba[ext=m4a]/bv*[height<=720]+ba/b[height<=720]/b",
-    "480": "bv*[height<=480][vcodec^=avc1]+ba[acodec^=mp4a]/bv*[height<=480][ext=mp4]+ba[ext=m4a]/bv*[height<=480]+ba/b[height<=480]/b",
-    "360": "bv*[height<=360][vcodec^=avc1]+ba[acodec^=mp4a]/bv*[height<=360][ext=mp4]+ba[ext=m4a]/bv*[height<=360]+ba/b[height<=360]/b",
-    "144": "bv*[height<=144][vcodec^=avc1]+ba[acodec^=mp4a]/bv*[height<=144][ext=mp4]+ba[ext=m4a]/bv*[height<=144]+ba/b[height<=144]/b",
+    "best": "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/best",
+    "720": "bv*[height<=720][vcodec^=avc1]+ba[acodec^=mp4a]/bv*[height<=720][ext=mp4]+ba[ext=m4a]/bv*[height<=720]+ba/b[height<=720]/best",
+    "480": "bv*[height<=480][vcodec^=avc1]+ba[acodec^=mp4a]/bv*[height<=480][ext=mp4]+ba[ext=m4a]/bv*[height<=480]+ba/b[height<=480]/best",
+    "360": "bv*[height<=360][vcodec^=avc1]+ba[acodec^=mp4a]/bv*[height<=360][ext=mp4]+ba[ext=m4a]/bv*[height<=360]+ba/b[height<=360]/best",
+    "144": "bv*[height<=144][vcodec^=avc1]+ba[acodec^=mp4a]/bv*[height<=144][ext=mp4]+ba[ext=m4a]/bv*[height<=144]+ba/b[height<=144]/best",
 }
 
 # Match yt-dlp's recommended audio-selection order, then convert with FFmpeg.
-AUDIO_FORMAT = "ba/b"
+AUDIO_FORMAT = "ba/best"
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
@@ -150,6 +150,7 @@ class MediaInfo:
     duration_seconds: int | None = None
     thumbnail_url: str | None = None
     formats: list[str] = field(default_factory=list)
+    file_size_bytes: int | None = None
 
 
 @dataclass
@@ -278,6 +279,7 @@ def _extract_info_sync(url: str) -> dict:
         "no_warnings": True,
         "extract_flat": False,
         "skip_download": True,
+        "ignore_no_formats_error": True,
         "extractor_args": _get_extractor_args(url),
         "nocheckcertificate": False,
         **_get_runtime_options(url),
@@ -644,15 +646,21 @@ async def fetch_info(url: str) -> MediaInfo:
         reverse=True,
     )
 
+    estimated_size = info.get("filesize") or info.get("filesize_approx")
     return MediaInfo(
         title=info.get("title", "Unknown"),
         uploader=info.get("uploader") or info.get("channel") or "Unknown",
         duration=format_duration(info.get("duration")),
         platform=info.get("extractor_key", "Unknown"),
-        file_size_str=format_size(info.get("filesize") or info.get("filesize_approx")),
+        file_size_str=format_size(estimated_size),
         duration_seconds=_duration_seconds(info.get("duration")),
         thumbnail_url=info.get("thumbnail"),
         formats=formats[:6],
+        file_size_bytes=(
+            int(estimated_size)
+            if isinstance(estimated_size, (int, float)) and estimated_size > 0
+            else None
+        ),
     )
 
 
@@ -710,6 +718,7 @@ async def download_media(
             file_size_str=format_size(actual_size),
             duration_seconds=_duration_seconds(info.get("duration")),
             thumbnail_url=info.get("thumbnail"),
+            file_size_bytes=actual_size,
         )
 
         completed_file = file_path
