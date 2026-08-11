@@ -290,7 +290,10 @@ async def cmd_audio(message: Message, bot: Bot) -> None:
 
 @router.message(F.text & F.text.regexp(r"https?://\S+"))
 async def handle_url_message(message: Message, bot: Bot) -> None:
-    lang = await get_user_lang_or_default(message.from_user.id)  # type: ignore[union-attr]
+    if message.from_user is None:
+        return
+    user_id = message.from_user.id
+    lang = await get_user_lang_or_default(user_id)
     if not await ensure_mode_selected(message, lang):
         return
 
@@ -299,7 +302,7 @@ async def handle_url_message(message: Message, bot: Bot) -> None:
     if not url or not is_valid_url(url):
         return
 
-    mode = await get_user_mode_or_default(message.from_user.id)  # type: ignore[union-attr]
+    mode = await get_user_mode_or_default(user_id)
     if mode == "converter":
         await message.answer(t(lang, "mode_need_downloader"))
         return
