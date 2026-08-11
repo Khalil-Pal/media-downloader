@@ -42,9 +42,13 @@ SMALL_FILE_LIMIT = 50 * 1024 * 1024
 async def _download_plan_access(
     message: Message,
     lang: str,
+    user_id: int | None = None,
     file_size_bytes: int | None = None,
 ) -> bool:
-    user_id = message.from_user.id  # type: ignore[union-attr]
+    if user_id is None:
+        if message.from_user is None:
+            return False
+        user_id = message.from_user.id
     allowed, reason_key = await check_usage_allowed(
         user_id,
         "download",
@@ -60,13 +64,17 @@ async def _run_download(
     message: Message,
     bot: Bot,
     url: str,
+    user_id: int | None = None,
     quality: str = "best",
     audio_only: bool = False,
 ) -> None:
-    user_id = message.from_user.id  # type: ignore[union-attr]
+    if user_id is None:
+        if message.from_user is None:
+            return
+        user_id = message.from_user.id
     lang = await get_user_lang_or_default(user_id)
 
-    if not await _download_plan_access(message, lang):
+    if not await _download_plan_access(message, lang, user_id=user_id):
         return
 
     allowed, reason = await rate_limiter.check(user_id)
@@ -251,7 +259,7 @@ async def cmd_download(message: Message, bot: Bot) -> None:
         await message.answer(t(lang, "invalid_url"))
         return
 
-    if not await _download_plan_access(message, lang):
+    if not await _download_plan_access(message, lang, user_id=user_id):
         return
 
     await message.answer(
@@ -277,7 +285,7 @@ async def cmd_audio(message: Message, bot: Bot) -> None:
         await message.answer(t(lang, "invalid_url"))
         return
 
-    await _run_download(message, bot, url, audio_only=True)
+    await _run_download(message, bot, url, user_id=user_id, audio_only=True)
 
 
 @router.message(F.text & F.text.regexp(r"https?://\S+"))
@@ -296,7 +304,7 @@ async def handle_url_message(message: Message, bot: Bot) -> None:
         await message.answer(t(lang, "mode_need_downloader"))
         return
 
-    if not await _download_plan_access(message, lang):
+    if not await _download_plan_access(message, lang, user_id=user_id):
         return
 
     await message.answer(

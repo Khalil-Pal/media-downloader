@@ -48,6 +48,7 @@ async def cb_quality(callback: CallbackQuery, bot: Bot) -> None:
         message=callback.message,
         bot=bot,
         url=url,
+        user_id=user_id,
         quality=effective_quality,
         audio_only=audio_only,
     )
