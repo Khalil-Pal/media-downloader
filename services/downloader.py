@@ -82,11 +82,24 @@ _EXTRACTOR_ARGS_YOUTUBE: dict = {
     },
 }
 _EXTRACTOR_ARGS_GENERIC: dict = {}
+_EXTRACTOR_ARGS_YOUTUBE_FALLBACKS: tuple[dict, ...] = (
+    _EXTRACTOR_ARGS_YOUTUBE,
+    {"youtube": {"player_client": ["web"]}},
+    {"youtube": {"player_client": ["android"]}},
+    {},
+)
 
 
 def _get_extractor_args(url: str) -> dict:
     """Return YouTube-only extractor arguments when the URL is YouTube."""
     return _EXTRACTOR_ARGS_YOUTUBE if _is_youtube_url(url) else _EXTRACTOR_ARGS_GENERIC
+
+
+def _youtube_extractor_args_variants(url: str) -> tuple[dict, ...]:
+    """Return fallback YouTube clients for stream URLs rejected after metadata."""
+    if not _is_youtube_url(url):
+        return (_EXTRACTOR_ARGS_GENERIC,)
+    return _EXTRACTOR_ARGS_YOUTUBE_FALLBACKS
 
 
 def _get_runtime_options(url: str) -> dict:
@@ -593,10 +606,45 @@ def _download_sync(
     if not audio_only:
         ydl_opts["merge_output_format"] = "mp4"
 
+    def run_download_with(options: dict) -> dict:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            return ydl.extract_info(url, download=True)
+
     try:
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
+            last_error: yt_dlp.utils.DownloadError | None = None
+            for attempt, extractor_args in enumerate(
+                _youtube_extractor_args_variants(url),
+                start=1,
+            ):
+                attempt_opts = dict(ydl_opts)
+                attempt_opts["extractor_args"] = extractor_args
+                try:
+                    info = run_download_with(attempt_opts)
+                    break
+                except yt_dlp.utils.DownloadError as exc:
+                    last_error = exc
+                    if not _is_youtube_url(url):
+                        raise
+                    msg = str(exc).lower()
+                    retryable = (
+                        "403" in msg
+                        or "forbidden" in msg
+                        or "unable to download video data" in msg
+                    )
+                    if not retryable or attempt == len(_EXTRACTOR_ARGS_YOUTUBE_FALLBACKS):
+                        raise
+                    logger.warning(
+                        "YouTube download attempt %s failed with a retryable error; "
+                        "trying another client: %s",
+                        attempt,
+                        str(exc)[:300],
+                    )
+                    for partial in output_path.glob("media*"):
+                        if partial.is_file():
+                            partial.unlink(missing_ok=True)
+            else:
+                raise last_error or yt_dlp.utils.DownloadError("Download failed.")
         except yt_dlp.utils.DownloadError:
             if _is_instagram_url(url):
                 logger.info("yt-dlp Instagram download failed; trying instaloader fallback.")
