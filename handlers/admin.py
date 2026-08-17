@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from html import escape
 
 from aiogram import Bot, Router
 from aiogram.filters import Command
@@ -46,23 +47,35 @@ async def cmd_broadcast(message: Message, bot: Bot) -> None:
         return
     broadcast_text = parts[1].strip()
     user_ids = await get_all_user_ids()
-    if not user_ids:
+    recipients = [uid for uid in user_ids if uid != settings.admin_id]
+    skipped_admin = len(user_ids) - len(recipients)
+    if not recipients:
         await message.answer("No users to broadcast to yet.")
         return
     status = await message.answer(
-        "Broadcasting to <b>" + str(len(user_ids)) + "</b> users..."
+        "Broadcasting to <b>" + str(len(recipients)) + "</b> users..."
     )
     sent = 0
-    failed = 0
-    for uid in user_ids:
+    failed_users: list[tuple[int, str]] = []
+    for uid in recipients:
         try:
-            await bot.send_message(uid, broadcast_text)
+            await bot.send_message(uid, broadcast_text, parse_mode=None)
             sent += 1
-        except Exception:
-            failed += 1
+        except Exception as exc:
+            failed_users.append((uid, exc.__class__.__name__))
+            logger.warning("Broadcast failed for user %s: %s", uid, exc)
         await asyncio.sleep(0.05)
+    failed_preview = ""
+    if failed_users:
+        failed_preview = "\nFailed IDs: <code>" + escape(
+            ", ".join(f"{uid} ({reason})" for uid, reason in failed_users[:10])
+        ) + "</code>"
+        if len(failed_users) > 10:
+            failed_preview += "\nMore failures are in Railway logs."
     await status.edit_text(
         "<b>Broadcast complete</b>\n\n"
         "Sent: <b>" + str(sent) + "</b>\n"
-        "Failed (blocked/deleted): <b>" + str(failed) + "</b>"
+        "Skipped admin: <b>" + str(skipped_admin) + "</b>\n"
+        "Failed (blocked/deleted/error): <b>" + str(len(failed_users)) + "</b>"
+        + failed_preview
     )
